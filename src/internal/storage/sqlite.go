@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,6 +36,49 @@ func Open(path string) (*Store, error) {
 
 // Close releases the SQLite connection.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Health verifies that the connection is reachable and the SQLite file passes
+// its lightweight integrity check. It is suitable for readiness probes.
+func (s *Store) Health(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("database ping: %w", err)
+	}
+	var result string
+	if err := s.db.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&result); err != nil {
+		return fmt.Errorf("database quick check: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("database quick check: %s", result)
+	}
+	return nil
+}
+
+// Backup creates a transactionally consistent SQLite snapshot without
+// overwriting an existing file. The destination parent must already exist.
+func (s *Store) Backup(ctx context.Context, destination string) error {
+	destination, err := filepath.Abs(filepath.Clean(destination))
+	if err != nil {
+		return err
+	}
+	if info, statErr := os.Lstat(destination); statErr == nil {
+		return fmt.Errorf("backup destination already exists: %s (%s)", destination, info.Mode())
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if info, statErr := os.Stat(filepath.Dir(destination)); statErr != nil || !info.IsDir() {
+		if statErr != nil {
+			return statErr
+		}
+		return fmt.Errorf("backup parent is not a directory: %s", filepath.Dir(destination))
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, destination); err != nil {
+		return fmt.Errorf("database backup: %w", err)
+	}
+	if err := os.Chmod(destination, 0o600); err != nil {
+		return fmt.Errorf("secure backup permissions: %w", err)
+	}
+	return nil
+}
 
 func (s *Store) migrate(ctx context.Context) error {
 	statements := []string{

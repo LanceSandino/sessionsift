@@ -8,6 +8,14 @@ export function useLatestScroll(ref:RefObject<HTMLElement|null>,resetKey:string)
   },[ref,resetKey]);
 }
 
-export function scrollToCheckpoint(id:string){
-  document.getElementById(id)?.scrollIntoView({behavior:"smooth",block:"start"});
+export function scrollToCheckpoint(id:string,viewport?:HTMLElement|null){
+  const target=document.getElementById(id);
+  if(!target)return;
+  if(viewport&&viewport.contains(target)){
+    const top=viewport.scrollTop+target.getBoundingClientRect().top-viewport.getBoundingClientRect().top;
+    if(typeof viewport.scrollTo==="function")viewport.scrollTo({top,behavior:"smooth"});
+    else viewport.scrollTop=top;
+    return;
+  }
+  target.scrollIntoView({behavior:"smooth",block:"start"});
 }

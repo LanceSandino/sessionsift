@@ -1,6 +1,9 @@
 # SessionSift MCP connection guide
 
-SessionSift exposes seven read-only tools: list sessions, get a session, get metrics, get a bounded timeline, get a turn, get findings, and compare sessions. Every tool calls the canonical Local Agent service. There is no shell, process, filesystem, raw SQL, or arbitrary HTTP tool.
+SessionSift exposes ten read-only tools: seven session inspection/comparison
+tools plus aggregate analytics, recurring corrections, and deterministic
+context recommendations. Every tool calls the canonical Local Agent service.
+There is no shell, process, filesystem, raw SQL, or arbitrary HTTP tool.
 
 ## Codex local stdio
 
@@ -33,9 +36,24 @@ http_headers = { Authorization = "Bearer YOUR_SCOPED_GRANT", MCP-Protocol-Versio
 
 Claude Code, Cursor, VS Code, MCP Inspector, and custom clients can use the same endpoint and headers. SessionSift serves legacy MCP `2025-11-25`, one JSON-RPC message per POST. It does not serve an SSE GET stream.
 
-## ChatGPT limitation
+## ChatGPT OAuth MCP
 
-ChatGPT does not accept this scoped bearer-grant setup; its MCP connector requires OAuth. SessionSift does not publish OAuth discovery metadata and does not claim ChatGPT connector compatibility. ChatGPT conversation data is supported separately through user-provided data exports.
+ChatGPT connects to `https://bridge.example.com/mcp`. This endpoint
+uses current Streamable HTTP MCP through the official Go SDK and requires both:
+
+1. a valid Cloudflare Access `Cf-Access-Jwt-Assertion`, produced through
+   Cloudflare Managed OAuth; and
+2. a non-expired local grant for the exact verified email, approved in
+   **Remote access → ChatGPT MCP**.
+
+Protected-resource discovery is available at
+`/.well-known/oauth-protected-resource`. Keep Google as the upstream Access
+identity provider and enable Managed OAuth on the Access application. See the
+[deployment guide](deployment.md) for callbacks, lifetimes, environment values,
+and verification.
+
+ChatGPT conversation data remains supported separately through user-provided
+data exports; an MCP connection is not an export source.
 
 ## Paging and bounds
 

@@ -1,0 +1,39 @@
+/** @module TimelineStyles @description Styles the prompt-centered normal and expanded timeline journey. */
+.timelineCard{grid-template-rows:auto auto minmax(0,1fr)!important;overflow:hidden}
+.timelineToolbar{display:grid;grid-template-columns:minmax(190px,310px) minmax(0,1fr);gap:10px;align-items:end;margin-bottom:9px}
+.timelineSummary{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.timelineSummary span{padding:6px 8px;border:1px solid #283b5a;border-radius:8px;background:#0d182a;color:#7f8ea6;font-size:8px;white-space:nowrap}
+.timelineSummary b{color:#dbe5f6}
+.timelineJourneyLayout{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;min-height:0;overflow:hidden}
+.timelineCard.expandedTimeline .timelineJourneyLayout{grid-template-columns:minmax(180px,240px) minmax(0,1fr);gap:10px}
+.timelineNavigator{min-width:0;min-height:0;padding:9px;overflow:hidden;border:1px solid #263957;border-radius:11px;background:#0b1526}
+.timelineNavigator>header{display:flex;justify-content:space-between;gap:8px;margin-bottom:7px;color:#b7c5dc;font-size:9px}
+.timelineNavigator>header small{color:#697a94;font-size:7px}
+.timelineNavigator>div{display:grid;align-content:start;gap:3px;height:calc(100% - 22px);overflow-y:auto;overscroll-behavior:contain}
+.timelineNavigator button{display:grid;grid-template-columns:24px minmax(0,1fr);gap:7px;align-items:center;width:100%;min-width:0;padding:6px;border:1px solid transparent;border-radius:8px;background:transparent;color:#8797b0;text-align:left;cursor:pointer}
+.timelineNavigator button:hover,.timelineNavigator button:focus-visible{border-color:#344b72;background:#14223a}
+.timelineNavigator button>span:first-child{display:grid;place-items:center;width:24px;height:24px;border-radius:8px;background:#203252;color:#b8c8ff;font-size:8px;font-weight:800}
+.timelineNavigator button b,.timelineNavigator button small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.timelineNavigator button b{color:#aebdd4;font-size:8px}
+.timelineNavigator button small{margin-top:2px;color:#65758d;font-size:7px}
+.timelineScroll{display:grid;align-content:start;gap:0;height:auto;min-height:0;padding:2px 7px 16px 2px;scroll-padding-block:10px 18px}
+.journeyCheckpoint{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr);gap:9px;min-width:0;scroll-margin-top:9px}
+.journeyCheckpoint:not(:last-child)::before{position:absolute;top:31px;bottom:-3px;left:16px;width:1px;background:linear-gradient(180deg,#42577d,#243550);content:""}
+.journeyRail{position:relative;z-index:1;padding-top:8px}
+.journeyRail span{display:grid;place-items:center;width:32px;height:32px;border:1px solid #40577f;border-radius:11px;background:linear-gradient(145deg,#263b64,#192944);color:#c4d1ff;font-size:9px;font-weight:800;box-shadow:0 7px 18px rgb(0 0 0 / 28%)}
+.journeyPrompt{width:100%;min-width:0;margin-bottom:8px;padding:10px 11px;border:1px solid #273a58;border-radius:11px;background:linear-gradient(145deg,#121f34,#0e192b);color:#dce6f7;text-align:left;cursor:pointer;transition:border-color 140ms ease,background-color 140ms ease,transform 140ms ease}
+.journeyPrompt:hover,.journeyPrompt:focus-visible{transform:translateY(-1px);border-color:#506ba2;background:linear-gradient(145deg,#172743,#111e33)}
+.journeyCheckpoint.hasFailure .journeyPrompt{border-color:#5a3946}
+.journeyPrompt>header{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:7px;align-items:center}
+.journeyLabel{color:#9cb0ff;font-size:8px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+.journeyPrompt time{overflow:hidden;color:#74849d;font:8px ui-monospace,SFMono-Regular,Menlo,monospace;text-overflow:ellipsis;white-space:nowrap}
+.journeyPrompt>header small{color:#66768e;font-size:8px}
+.journeyPrompt>p{display:-webkit-box;margin:7px 0 8px;overflow:hidden;color:#e5ecf8;font-size:11px;line-height:1.42;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.journeyStats{display:flex;flex-wrap:wrap;gap:4px}
+.journeyStats span{padding:3px 6px;border:1px solid #293b58;border-radius:999px;background:#0c1729;color:#8392aa;font-size:7px;white-space:nowrap}
+.journeyStats .primaryStat{color:#bbcaf0;border-color:#405782}
+.journeyStats .failureStat{color:#ff9bab;border-color:#633947;background:#241520}
+.journeyNotes{display:grid;gap:4px;margin-top:8px;padding-top:7px;border-top:1px solid #23334d}
+.journeyNotes>span{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px;min-width:0;color:#8998ae;font-size:8px;line-height:1.35}
+.journeyNotes b{color:#ddb77d;font-size:7px;letter-spacing:.05em}
+.journeyNotes small{color:#65758d;font-size:7px}

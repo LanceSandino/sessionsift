@@ -42,6 +42,62 @@ func TestPairingRequiresClaimAndOwnerApproval(t *testing.T) {
 	}
 }
 
+func TestOAuthPrincipalGrantRequiresLocalApprovalAndIsRevocable(t *testing.T) {
+	manager, err := OpenManager(filepath.Join(t.TempDir(), "remote-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	grant, err := manager.ApproveOAuthPrincipal("Owner@Example.com", []protocol.Operation{protocol.SessionList, protocol.SessionMetrics}, 14*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Principal != "owner@example.com" || grant.AuthMethod != "oauth" || grant.TokenHash != "" {
+		t.Fatalf("grant=%+v", grant)
+	}
+	if err = manager.AuthorizePrincipal(context.Background(), "OWNER@example.com", protocol.SessionMetrics); err != nil {
+		t.Fatal(err)
+	}
+	grants := manager.OAuthGrants()
+	if len(grants) != 1 || grants[0].ID != grant.ID || grants[0].Principal != "owner@example.com" {
+		t.Fatalf("oauth grants=%+v", grants)
+	}
+	authorizer := NewPrincipalAuthorizer(manager, "owner@example.com")
+	if err = authorizer.Authorize(context.Background(), protocol.SessionList); err != nil {
+		t.Fatalf("principal authorizer: %v", err)
+	}
+	if err = manager.AuthorizePrincipal(context.Background(), "owner@example.com", protocol.SessionGet); err == nil {
+		t.Fatal("unapproved OAuth capability was accepted")
+	}
+	if _, _, err = manager.AllowPrincipalRequest("owner@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.Revoke(grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.AuthorizePrincipal(context.Background(), "owner@example.com", protocol.SessionList); err == nil {
+		t.Fatal("revoked OAuth grant was accepted")
+	}
+}
+
+func TestOAuthPrincipalGrantValidatesIdentityAndDuration(t *testing.T) {
+	manager, _ := OpenManager(filepath.Join(t.TempDir(), "remote-state.json"))
+	for _, test := range []struct {
+		principal string
+		duration  time.Duration
+		ops       []protocol.Operation
+	}{
+		{"not-an-email", time.Hour, []protocol.Operation{protocol.SessionList}},
+		{"owner@example.com", 31 * 24 * time.Hour, []protocol.Operation{protocol.SessionList}},
+		{"owner@example.com", time.Hour, []protocol.Operation{"shell.exec"}},
+	} {
+		if _, err := manager.ApproveOAuthPrincipal(test.principal, test.ops, test.duration); err == nil {
+			t.Fatalf("accepted invalid OAuth grant: %+v", test)
+		}
+	}
+}
+
 func TestEmptyManagerCollectionsAreArrays(t *testing.T) {
 	manager, err := OpenManager(filepath.Join(t.TempDir(), "remote-state.json"))
 	if err != nil {
@@ -110,6 +166,24 @@ func TestManagerValidationConnectionsAndPersistence(t *testing.T) {
 	reopened, err := OpenManager(path)
 	if err != nil || len(reopened.Connections()) != 1 || grant.ID == "" {
 		t.Fatalf("reopen err=%v", err)
+	}
+}
+
+func TestBearerGrantPersistsAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "remote-state.json")
+	manager, _ := OpenManager(path)
+	pairing, _ := manager.CreatePairing("device")
+	_, _ = manager.ClaimPairing(pairing.Code, "reviewer", []protocol.Operation{protocol.SessionList})
+	_, token, err := manager.ApprovePairing(pairing.Code, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = reopened.Authenticate(token); err != nil {
+		t.Fatalf("bearer grant did not survive restart: %v", err)
 	}
 }
 

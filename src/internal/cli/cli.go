@@ -53,6 +53,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return stop(paths, out, errOut)
 	case "status":
 		return status(out, errOut)
+	case "backup":
+		return backup(ctx, paths, out, errOut)
 	case "import":
 		return importSessions(ctx, paths, out, errOut)
 	case "import-chatgpt":
@@ -97,7 +99,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sessionsift <start|stop|status|import|import-chatgpt|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
+	fmt.Fprintln(w, "usage: sessionsift <start|stop|status|backup|import|import-chatgpt|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
 }
 
 func openStore(paths config.Paths) (*storage.Store, error) {
@@ -118,24 +120,8 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	} else if replayed > 0 {
 		fmt.Fprintf(out, "Replayed %d spooled hook events.\n", replayed)
 	}
-	codexHome, err := discover.Home()
-	if err == nil {
-		result, importErr := ingest.ImportAll(ctx, store, codexHome)
-		if importErr != nil {
-			fmt.Fprintf(errOut, "initial import warning: %v\n", importErr)
-		} else {
-			fmt.Fprintf(out, "Imported %d of %d discovered sessions (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
-		}
-	}
+	codexHome, _ := discover.Home()
 	chatGPTExport := chatGPTExportPath(paths)
-	if chatGPTExport != "" {
-		result, importErr := ingest.ImportChatGPT(ctx, store, chatGPTExport)
-		if importErr != nil {
-			fmt.Fprintf(errOut, "ChatGPT import warning: %v\n", importErr)
-		} else {
-			fmt.Fprintf(out, "Imported %d of %d ChatGPT conversations (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
-		}
-	}
 	if err := os.WriteFile(paths.PID, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		return fail(errOut, err)
 	}
@@ -157,15 +143,16 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	if !loopbackListener(address) {
 		handler = localProxyOnly(handler)
 	}
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	stopCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if codexHome != "" {
-		go watchCodex(stopCtx, store, codexHome, errOut)
+		go importAndWatchCodex(stopCtx, store, codexHome, out, errOut)
 	}
 	if chatGPTExport != "" {
-		go watchChatGPT(stopCtx, store, chatGPTExport, errOut)
+		go importAndWatchChatGPT(stopCtx, store, chatGPTExport, out, errOut)
 	}
+	go runBackups(stopCtx, store, paths.Backups, errOut)
 	go func() {
 		<-stopCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -177,6 +164,30 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	return 0
+}
+
+func importAndWatchCodex(ctx context.Context, store *storage.Store, home string, out, errOut io.Writer) {
+	result, err := ingest.ImportAll(ctx, store, home)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintf(errOut, "initial import warning: %v\n", err)
+		}
+	} else {
+		fmt.Fprintf(out, "Imported %d of %d discovered sessions (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
+	}
+	watchCodex(ctx, store, home, errOut)
+}
+
+func importAndWatchChatGPT(ctx context.Context, store *storage.Store, path string, out, errOut io.Writer) {
+	result, err := ingest.ImportChatGPT(ctx, store, path)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintf(errOut, "ChatGPT import warning: %v\n", err)
+		}
+	} else {
+		fmt.Fprintf(out, "Imported %d of %d ChatGPT conversations (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
+	}
+	watchChatGPT(ctx, store, path, errOut)
 }
 
 func watchChatGPT(ctx context.Context, store *storage.Store, path string, errOut io.Writer) {
@@ -317,6 +328,88 @@ func status(out, errOut io.Writer) int {
 	return 0
 }
 
+const backupRetention = 7
+
+func backup(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
+	store, err := openStore(paths)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	defer store.Close()
+	path, err := createBackup(ctx, store, paths.Backups, time.Now().UTC())
+	if err != nil {
+		return fail(errOut, err)
+	}
+	if err := pruneBackups(paths.Backups, backupRetention); err != nil {
+		return fail(errOut, err)
+	}
+	fmt.Fprintf(out, "Backup created: %s\n", path)
+	return 0
+}
+
+func createBackup(ctx context.Context, store *storage.Store, directory string, now time.Time) (string, error) {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", err
+	}
+	name := "sessionsift-" + now.UTC().Format("20060102T150405.000000000Z") + ".db"
+	path := filepath.Join(directory, name)
+	if err := store.Backup(ctx, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func pruneBackups(directory string, retain int) error {
+	if retain < 1 {
+		return errors.New("backup retention must be positive")
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), "sessionsift-") && strings.HasSuffix(entry.Name(), ".db") {
+			files = append(files, entry.Name())
+		}
+	}
+	removeCount := len(files) - retain
+	if removeCount < 0 {
+		removeCount = 0
+	}
+	for _, name := range files[:removeCount] {
+		if err := os.Remove(filepath.Join(directory, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runBackups(ctx context.Context, store *storage.Store, directory string, errOut io.Writer) {
+	backupOnce := func() {
+		if _, err := createBackup(ctx, store, directory, time.Now().UTC()); err != nil {
+			if ctx.Err() == nil {
+				fmt.Fprintf(errOut, "backup warning: %v\n", err)
+			}
+			return
+		}
+		if err := pruneBackups(directory, backupRetention); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(errOut, "backup retention warning: %v\n", err)
+		}
+	}
+	backupOnce()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			backupOnce()
+		}
+	}
+}
+
 func importSessions(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	store, err := openStore(paths)
 	if err != nil {
@@ -427,8 +520,20 @@ func serveMCP(ctx context.Context, paths config.Paths, in io.Reader, out, errOut
 		return fail(errOut, err)
 	}
 	defer store.Close()
-	if err := mcpserver.New(service.NewLocal(store)).Serve(ctx, in, out); err != nil {
-		return fail(errOut, err)
+	server := service.NewLocal(store)
+	var serveErr error
+	if inputFile, inputOK := in.(*os.File); inputOK && inputFile == os.Stdin {
+		if outputFile, outputOK := out.(*os.File); outputOK && outputFile == os.Stdout {
+			serveErr = mcpserver.ServeSDK(ctx, server, in, out)
+		}
+	}
+	if serveErr == nil && (in != os.Stdin || out != os.Stdout) {
+		// Deterministic finite streams keep the legacy harness used by tests and embedders;
+		// the real CLI process uses the current official SDK above.
+		serveErr = mcpserver.New(server).Serve(ctx, in, out)
+	}
+	if serveErr != nil {
+		return fail(errOut, serveErr)
 	}
 	return 0
 }
@@ -499,7 +604,16 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 			chatSource = "configured path missing\t!"
 		}
 	}
-	fmt.Fprintf(out, "Codex home       %s\t✓\nSessions         %d found\t✓\nArchived         %d found\t✓\nChatGPT source   %s\nChatGPT chats    %d imported\nHistory          %s\nHook capture     %s\nOTel logs       %s\nOTel metrics    %s\nCollector        %s\nDatabase         %s\nParser warnings  %d\n", home, current, archived, chatSource, chatCount, history, hooks, otelLogs, otelMetrics, collector, database, warnings)
+	backupState := "none yet\t!"
+	if entries, readErr := os.ReadDir(paths.Backups); readErr == nil {
+		for index := len(entries) - 1; index >= 0; index-- {
+			if entries[index].Type().IsRegular() && strings.HasPrefix(entries[index].Name(), "sessionsift-") && strings.HasSuffix(entries[index].Name(), ".db") {
+				backupState = entries[index].Name() + "\t✓"
+				break
+			}
+		}
+	}
+	fmt.Fprintf(out, "Codex home       %s\t✓\nSessions         %d found\t✓\nArchived         %d found\t✓\nChatGPT source   %s\nChatGPT chats    %d imported\nHistory          %s\nHook capture     %s\nOTel logs       %s\nOTel metrics    %s\nCollector        %s\nDatabase         %s\nLatest backup    %s\nParser warnings  %d\n", home, current, archived, chatSource, chatCount, history, hooks, otelLogs, otelMetrics, collector, database, backupState, warnings)
 	return 0
 }
 
@@ -601,7 +715,7 @@ const mcpSnippet = `Add SessionSift's read-only local MCP server to ~/.codex/con
 command = "sessionsift"
 args = ["mcp"]
 
-The stdio process exposes seven bounded, redacted tools and no shell, process, filesystem, or SQL primitive.`
+The stdio process exposes ten bounded, redacted tools and no shell, process, filesystem, or SQL primitive.`
 
 var listenTCP = net.Listen
 var signalPID = func(pid int) error {
@@ -613,7 +727,7 @@ var signalPID = func(pid int) error {
 }
 var getHealth = func() (*http.Response, error) {
 	client := http.Client{Timeout: 500 * time.Millisecond}
-	return client.Get("http://" + localAddress(listenAddress()) + "/healthz")
+	return client.Get("http://" + localAddress(listenAddress()) + "/readyz")
 }
 
 func write(out, errOut io.Writer, value any) int {

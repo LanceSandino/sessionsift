@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +38,8 @@ type Grant struct {
 	ID         string               `json:"id"`
 	TokenHash  string               `json:"-"`
 	Reviewer   string               `json:"reviewer"`
+	AuthMethod string               `json:"auth_method,omitempty"`
+	Principal  string               `json:"principal,omitempty"`
 	Operations []protocol.Operation `json:"operations"`
 	CreatedAt  time.Time            `json:"created_at"`
 	ExpiresAt  time.Time            `json:"expires_at"`
@@ -85,6 +89,28 @@ type managerState struct {
 	Reviews     []Review      `json:"reviews"`
 	BadAttempts int           `json:"bad_attempts"`
 }
+
+type storedGrant struct {
+	ID         string               `json:"id"`
+	TokenHash  string               `json:"token_hash,omitempty"`
+	Reviewer   string               `json:"reviewer"`
+	AuthMethod string               `json:"auth_method,omitempty"`
+	Principal  string               `json:"principal,omitempty"`
+	Operations []protocol.Operation `json:"operations"`
+	CreatedAt  time.Time            `json:"created_at"`
+	ExpiresAt  time.Time            `json:"expires_at"`
+	Revoked    bool                 `json:"revoked"`
+}
+
+type storedManagerState struct {
+	Pairings    []Pairing     `json:"pairings"`
+	Grants      []storedGrant `json:"grants"`
+	Connections []Connection  `json:"connections"`
+	Audit       []AuditRecord `json:"audit"`
+	Annotations []Annotation  `json:"annotations"`
+	Reviews     []Review      `json:"reviews"`
+	BadAttempts int           `json:"bad_attempts"`
+}
 type Manager struct {
 	mu           sync.Mutex
 	path         string
@@ -103,8 +129,13 @@ func OpenManager(path string) (*Manager, error) {
 	m := &Manager{path: path, now: func() time.Time { return time.Now().UTC() }, claimBuckets: map[string]rateBucket{}, grantBuckets: map[string]rateBucket{}}
 	body, err := os.ReadFile(path)
 	if err == nil && len(body) > 0 {
-		if json.Unmarshal(body, &m.state) != nil {
+		var stored storedManagerState
+		if json.Unmarshal(body, &stored) != nil {
 			return nil, errors.New("invalid remote state")
+		}
+		m.state = managerState{Pairings: stored.Pairings, Connections: stored.Connections, Audit: stored.Audit, Annotations: stored.Annotations, Reviews: stored.Reviews, BadAttempts: stored.BadAttempts}
+		for _, grant := range stored.Grants {
+			m.state.Grants = append(m.state.Grants, Grant(grant))
 		}
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -199,13 +230,44 @@ func (m *Manager) ApprovePairing(code string, duration time.Duration) (Grant, st
 		return Grant{}, "", err
 	}
 	now := m.now()
-	grant := Grant{ID: "grant_" + shortHash(token), TokenHash: hash(token), Reviewer: pairing.Reviewer, Operations: pairing.Requested, CreatedAt: now, ExpiresAt: now.Add(duration)}
+	grant := Grant{ID: "grant_" + shortHash(token), TokenHash: hash(token), Reviewer: pairing.Reviewer, AuthMethod: "bearer", Operations: pairing.Requested, CreatedAt: now, ExpiresAt: now.Add(duration)}
 	connection := Connection{ID: "connection_" + shortHash(token+pairing.Code), GrantID: grant.ID, Reviewer: grant.Reviewer, ConnectedAt: now, LastSeenAt: now, Active: true}
 	m.state.Grants = append(m.state.Grants, grant)
 	m.state.Connections = append(m.state.Connections, connection)
 	pairing.Approved = true
 	pairing.Used = true
 	return grant, token, m.persist()
+}
+
+// ApproveOAuthPrincipal creates a local capability grant for an identity already authenticated by Access.
+func (m *Manager) ApproveOAuthPrincipal(principal string, operations []protocol.Operation, duration time.Duration) (Grant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	principal, err := normalizePrincipal(principal)
+	if err != nil {
+		return Grant{}, err
+	}
+	if duration <= 0 || duration > 30*24*time.Hour {
+		return Grant{}, errors.New("OAuth grant duration must be within 30 days")
+	}
+	if len(operations) == 0 {
+		return Grant{}, errors.New("at least one capability is required")
+	}
+	for _, operation := range operations {
+		if _, ok := protocol.DefinitionFor(operation); !ok {
+			return Grant{}, errors.New("capability is not allowlisted")
+		}
+	}
+	now := m.now()
+	seed, err := randomToken(32)
+	if err != nil {
+		return Grant{}, err
+	}
+	grant := Grant{ID: "grant_" + shortHash(principal+seed), Reviewer: principal, AuthMethod: "oauth", Principal: principal, Operations: append([]protocol.Operation(nil), operations...), CreatedAt: now, ExpiresAt: now.Add(duration)}
+	connection := Connection{ID: "connection_" + shortHash(grant.ID), GrantID: grant.ID, Reviewer: principal, ConnectedAt: now, LastSeenAt: now, Active: true}
+	m.state.Grants = append(m.state.Grants, grant)
+	m.state.Connections = append(m.state.Connections, connection)
+	return grant, m.persist()
 }
 func (m *Manager) Authorize(_ context.Context, token string, operation protocol.Operation) error {
 	m.mu.Lock()
@@ -231,6 +293,24 @@ func (m *Manager) Authorize(_ context.Context, token string, operation protocol.
 	return errors.New("invalid grant")
 }
 
+// AuthorizePrincipal applies a locally approved OAuth identity grant.
+func (m *Manager) AuthorizePrincipal(_ context.Context, principal string, operation protocol.Operation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	grant, err := m.principalGrantLocked(principal)
+	if err != nil {
+		return err
+	}
+	for _, allowed := range grant.Operations {
+		if allowed == operation {
+			m.touchConnection(grant.ID)
+			_ = m.persist()
+			return nil
+		}
+	}
+	return errors.New("capability denied")
+}
+
 func (m *Manager) Authenticate(token string) (Grant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -250,6 +330,21 @@ func (m *Manager) AllowRequest(token string) (Grant, time.Duration, error) {
 	}
 	return grant, 0, nil
 }
+
+// AllowPrincipalRequest authenticates and rate limits an OAuth identity.
+func (m *Manager) AllowPrincipalRequest(principal string) (Grant, time.Duration, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	grant, err := m.principalGrantLocked(principal)
+	if err != nil {
+		return Grant{}, 0, err
+	}
+	if !m.allow(m.grantBuckets, grant.ID, 120, time.Minute) {
+		bucket := m.grantBuckets[grant.ID]
+		return grant, time.Until(bucket.Started.Add(time.Minute)), errors.New("rate limit exceeded")
+	}
+	return grant, 0, nil
+}
 func (m *Manager) GrantForToken(token string) (Grant, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -259,6 +354,19 @@ func (m *Manager) GrantForToken(token string) (Grant, bool) {
 		}
 	}
 	return Grant{}, false
+}
+
+// OAuthGrants returns OAuth-backed grants without bearer token material.
+func (m *Manager) OAuthGrants() []Grant {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	values := make([]Grant, 0)
+	for _, grant := range m.state.Grants {
+		if grant.AuthMethod == "oauth" {
+			values = append(values, grant)
+		}
+	}
+	return values
 }
 func (m *Manager) Revoke(id string) error {
 	m.mu.Lock()
@@ -321,6 +429,24 @@ func (m *Manager) authenticateLocked(token string) (Grant, error) {
 		return grant, nil
 	}
 	return Grant{}, errors.New("invalid grant")
+}
+
+func (m *Manager) principalGrantLocked(principal string) (Grant, error) {
+	principal, err := normalizePrincipal(principal)
+	if err != nil {
+		return Grant{}, err
+	}
+	for index := len(m.state.Grants) - 1; index >= 0; index-- {
+		grant := m.state.Grants[index]
+		if grant.AuthMethod != "oauth" || grant.Principal != principal {
+			continue
+		}
+		if grant.Revoked || m.now().After(grant.ExpiresAt) {
+			return Grant{}, errors.New("grant expired or revoked")
+		}
+		return grant, nil
+	}
+	return Grant{}, errors.New("OAuth principal is not locally approved")
 }
 
 func (m *Manager) allow(buckets map[string]rateBucket, key string, maximum int, window time.Duration) bool {
@@ -414,7 +540,11 @@ func (m *Manager) touchConnection(grantID string) {
 	}
 }
 func (m *Manager) persist() error {
-	body, err := json.MarshalIndent(m.state, "", "  ")
+	stored := storedManagerState{Pairings: m.state.Pairings, Connections: m.state.Connections, Audit: m.state.Audit, Annotations: m.state.Annotations, Reviews: m.state.Reviews, BadAttempts: m.state.BadAttempts}
+	for _, grant := range m.state.Grants {
+		stored.Grants = append(stored.Grants, storedGrant(grant))
+	}
+	body, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -426,6 +556,15 @@ func (m *Manager) persist() error {
 		return err
 	}
 	return os.Rename(temporary, m.path)
+}
+
+func normalizePrincipal(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	address, err := mail.ParseAddress(value)
+	if err != nil || address.Address != value || len(value) > 320 {
+		return "", errors.New("valid OAuth principal email required")
+	}
+	return value, nil
 }
 func humanCode() (string, error) {
 	var body [4]byte

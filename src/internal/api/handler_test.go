@@ -195,6 +195,27 @@ func TestClosedStoreReturnsInternalError(t *testing.T) {
 	}
 }
 
+func TestReadinessChecksDatabaseAndLivenessDoesNot(t *testing.T) {
+	store := testStore(t)
+	handler := Handler(store)
+	ready := httptest.NewRecorder()
+	handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusOK || !strings.Contains(ready.Body.String(), `"status":"ready"`) {
+		t.Fatalf("ready=%d %s", ready.Code, ready.Body.String())
+	}
+	_ = store.Close()
+	unready := httptest.NewRecorder()
+	handler.ServeHTTP(unready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if unready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unready=%d %s", unready.Code, unready.Body.String())
+	}
+	live := httptest.NewRecorder()
+	handler.ServeHTTP(live, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if live.Code != http.StatusOK {
+		t.Fatalf("live=%d", live.Code)
+	}
+}
+
 func TestProtocolStatusMapping(t *testing.T) {
 	if statusFor("invalid_request") != http.StatusBadRequest || statusFor("denied") != http.StatusForbidden || statusFor("not_found") != http.StatusNotFound || statusFor("error") != http.StatusInternalServerError {
 		t.Fatal("protocol status mapping changed")

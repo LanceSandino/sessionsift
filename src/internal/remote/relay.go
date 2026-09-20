@@ -122,6 +122,20 @@ type GrantAuthorizer struct {
 	token   string
 }
 
+// PrincipalAuthorizer applies a locally approved grant to an edge-authenticated identity.
+type PrincipalAuthorizer struct {
+	manager   *Manager
+	principal string
+}
+
+func NewPrincipalAuthorizer(manager *Manager, principal string) PrincipalAuthorizer {
+	return PrincipalAuthorizer{manager: manager, principal: principal}
+}
+
+func (authorizer PrincipalAuthorizer) Authorize(ctx context.Context, operation protocol.Operation) error {
+	return authorizer.manager.AuthorizePrincipal(ctx, authorizer.principal, operation)
+}
+
 func NewGrantAuthorizer(manager *Manager, token string) GrantAuthorizer {
 	return GrantAuthorizer{manager: manager, token: token}
 }

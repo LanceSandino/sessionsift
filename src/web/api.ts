@@ -1,5 +1,5 @@
 /** @module ApiClient @description Fetches local-only SessionSift JSON resources. */
-import type { ComparePayload, RemotePairing, RemoteStatus, Session } from "./types";
+import type { AnalyticsReport, ComparePayload, RemoteGrant, RemotePairing, RemoteStatus, Session } from "./types";
 
 async function request<T>(path:string):Promise<T>{
   const response=await fetch(path,{headers:{Accept:"application/json"}});
@@ -13,7 +13,9 @@ export const api={
   sessions:(includeInternal=false)=>requestArray<Session>(`/api/v1/sessions${includeInternal?"?include_internal=true":""}`),
   session:(id:string)=>request<Session>(`/api/v1/sessions/${encodeURIComponent(id)}`),
   compare:(a:string,b:string)=>request<ComparePayload>(`/api/v1/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
+  analytics:()=>request<AnalyticsReport>("/api/v1/analytics"),
   remoteStatus:()=>request<RemoteStatus>("/api/v1/remote/status"),
+  approveOAuthPrincipal:(principal:string)=>send<RemoteGrant>("/api/v1/remote/oauth/grants",{principal,duration_days:14,operations:["session.list","session.get","session.metrics","session.timeline","session.findings","session.compare","turn.get","analysis.patterns","analysis.recurring_corrections","context.recommendations"]}),
   createPairing:()=>send<RemotePairing>("/api/v1/remote/pairings",{}),
   approvePairing:(code:string)=>send<{grant:unknown;token:string}>("/api/v1/remote/pairings/approve",{code,duration_minutes:30}),
   denyPairing:(code:string)=>send("/api/v1/remote/pairings/deny",{code}),

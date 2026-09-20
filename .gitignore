@@ -4,6 +4,7 @@ dist/
 build/
 .env
 .env.*
+!.env.sessionsift.example
 .DS_Store
 *.log
 !logs/branch_history.log
@@ -14,7 +15,7 @@ secrets/
 coverage/
 coverage.out
 src/webui/dist/
-sessionsift
+/sessionsift
 *.db
 *.db-shm
 *.db-wal

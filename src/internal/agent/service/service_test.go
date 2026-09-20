@@ -28,6 +28,9 @@ func TestExecuteProvidesCanonicalReadOperations(t *testing.T) {
 		{protocol.SessionCompare, CompareArguments{A: "s1", B: "s2"}},
 		{protocol.TurnGet, TurnArguments{SessionID: "s1", TurnID: "t1"}},
 		{protocol.ConnectionStatus, nil},
+		{protocol.AnalysisPatterns, nil},
+		{protocol.AnalysisCorrections, nil},
+		{protocol.ContextRecommendations, nil},
 	}
 	for index, item := range cases {
 		body, err := json.Marshal(item.arguments)

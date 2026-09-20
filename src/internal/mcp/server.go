@@ -81,6 +81,9 @@ var tools = []tool{
 	toolDefinition("get_turn", "Get turn", "Get one redacted turn from a session.", protocol.TurnGet, propertiesRequired(map[string]any{"session_id": stringProperty("Session identifier."), "turn_id": stringProperty("Turn identifier.")}, "session_id", "turn_id")),
 	toolDefinition("get_findings", "Get findings", "Get deterministic evidence-backed findings for one session.", protocol.SessionFindings, requiredSession()),
 	toolDefinition("compare_sessions", "Compare sessions", "Compare observable metrics and findings for two sessions.", protocol.SessionCompare, propertiesRequired(map[string]any{"a": stringProperty("First session identifier."), "b": stringProperty("Second session identifier.")}, "a", "b")),
+	toolDefinition("get_analytics", "Get analytics", "Get privacy-safe cross-session trends, breakdowns, and deterministic recommendations. Prompt and response text is never included.", protocol.AnalysisPatterns, properties(map[string]any{})),
+	toolDefinition("get_recurring_corrections", "Get recurring corrections", "Get aggregate possible scope-correction findings across visible sessions.", protocol.AnalysisCorrections, properties(map[string]any{})),
+	toolDefinition("get_context_recommendations", "Get context recommendations", "Get deterministic repository and prompt-context recommendations derived from aggregate evidence.", protocol.ContextRecommendations, properties(map[string]any{})),
 }
 
 func toolDefinition(name, title, description string, operation protocol.Operation, schema map[string]any) tool {

@@ -3,12 +3,59 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 )
+
+func TestHealthAndBackupProduceRestorablePrivateDatabase(t *testing.T) {
+	directory := t.TempDir()
+	store, err := Open(filepath.Join(directory, "live.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	session := domain.Session{ID: "backup-session", ExternalSessionID: "backup-session", Title: "Backed up", StartedAt: now, EndedAt: now, ParserVersion: domain.ParserVersion}
+	if err := store.SaveImport(ctx, "backup-path", "one", session); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Health(ctx); err != nil {
+		t.Fatalf("healthy store: %v", err)
+	}
+	destination := filepath.Join(directory, "backups", "snapshot.db")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Backup(ctx, destination); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode=%v err=%v", info.Mode().Perm(), err)
+	}
+	restored, err := Open(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	got, err := restored.GetSession(ctx, session.ID)
+	if err != nil || got.Title != session.Title {
+		t.Fatalf("restored=%+v err=%v", got, err)
+	}
+	if err := store.Backup(ctx, destination); err == nil {
+		t.Fatal("backup must not overwrite an existing snapshot")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Health(ctx); err == nil {
+		t.Fatal("closed store reported healthy")
+	}
+}
 
 func TestSaveImportIsIdempotentAndQueryable(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "test.db"))

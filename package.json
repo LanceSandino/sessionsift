@@ -13,6 +13,8 @@
     "start": "GOMODCACHE=$PWD/.cache/go-mod GOCACHE=$PWD/.cache/go-build go run ./src/cmd/sessionsift start",
     "test": "npm run typecheck && npm run test:web && npm run build:web && npm run test:go",
     "test:go": "GOMODCACHE=$PWD/.cache/go-mod GOCACHE=$PWD/.cache/go-build go test ./... -coverprofile=coverage.out && GOMODCACHE=$PWD/.cache/go-mod GOCACHE=$PWD/.cache/go-build go tool cover -func=coverage.out | awk '/^total:/ { gsub(\"%\", \"\", $3); if ($3 + 0 < 85) exit 1; print \"Go statement coverage: \" $3 \"%\" }'",
+    "test:mutation": "stryker run",
+    "test:mutation:unit": "vitest run --config src/web/vite.config.ts components/sessionFilters.test.ts components/timelineWindow.test.ts components/timelineJourney.test.ts",
     "test:web": "vitest run --config src/web/vite.config.ts --coverage",
     "test:watch": "vitest --config src/web/vite.config.ts",
     "coverage": "npm test",
@@ -20,11 +22,12 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "6.1.1",
-    "vite": "8.3.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "vite": "8.3.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "9.6.1",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
     "@types/react": "19.3.0",

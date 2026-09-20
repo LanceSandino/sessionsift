@@ -1,9 +1,57 @@
-/** @module Timeline @description Combines prompts and tool calls into chronological evidence. */
-import React,{useMemo,useRef,useState} from "react";
-import {absoluteTime,elapsed} from "../format";
-import type {Event,Session,ToolCall,Turn} from "../types";
+/** @module Timeline @description Presents a prompt-centered work journey with summarized evidence and expanded navigation. */
+import React,{useEffect,useMemo,useRef,useState} from "react";
+import {absoluteTime,duration} from "../format";
+import type {Session,Turn} from "../types";
 import {scrollToCheckpoint,useLatestScroll} from "../useLatestScroll";
-type Item={id:string;at:string;kind:string;description:string;badge:string;failed?:boolean;turn?:Turn};
-export function Timeline({session,onTurn}:{session:Session;onTurn:(turn:Turn)=>void}){const[filter,setFilter]=useState("all");const[limit,setLimit]=useState(200);const viewport=useRef<HTMLDivElement>(null);useLatestScroll(viewport,`${session.id}:${filter}`);const items=useMemo(()=>{const values:Item[]=[];(session.turns||[]).forEach(turn=>values.push({id:turn.id,at:turn.started_at,kind:"USER",description:turn.user_prompt_redacted||"Redacted prompt",badge:`${turn.input_tokens.toLocaleString()} tok`,turn}));(session.tool_calls||[]).forEach((call:ToolCall)=>values.push({id:call.id,at:call.timestamp,kind:call.tool_transport==="mcp"?"MCP":call.tool_category.toUpperCase(),description:call.target_path_display||call.command_signature||call.tool_name,badge:call.success?(call.tool_server||call.tool_name):"failed",failed:!call.success}));(session.events||[]).filter((event:Event)=>event.event_type!=="prompt"&&event.event_type!=="tool").forEach(event=>values.push({id:event.id,at:event.timestamp,kind:event.event_subtype==="steering_or_queued"?"STEER / QUEUE":(event.event_subtype||event.event_type).toUpperCase(),description:eventDescription(event),badge:event.event_type}));return values.sort((a,b)=>a.at.localeCompare(b.at))},[session]);const filtered=items.filter(item=>filter==="all"||(filter==="prompts"&&(item.kind==="USER"||item.kind==="STEER / QUEUE"))||(filter==="errors"&&item.failed)||(filter==="tools"&&item.kind!=="USER"&&item.kind!=="STEER / QUEUE"));const shown=filtered.slice(0,limit);return <section className="card timelineCard"><div className="sectionTitle"><div><h3>Conversation timeline</h3><small className="timelineStart">Started {absoluteTime(session.started_at)}</small></div><span className="pill">{items.length} events</span></div><nav className="checkpointNav" aria-label="Timeline prompt checkpoints">{(session.turns||[]).map(turn=><button key={turn.id} onClick={()=>scrollToCheckpoint(`timeline-${session.id}-${turn.id}`)}>Prompt {turn.sequence}</button>)}</nav><div className="tabs">{["all","prompts","tools","errors"].map(value=><button key={value} className={filter===value?"active":""} onClick={()=>{setFilter(value);setLimit(200)}}>{value}</button>)}</div><div ref={viewport} className="timeline timelineScroll scrollViewport" aria-label="Conversation timeline entries" data-start-position="latest">{shown.map(item=><button id={item.turn?`timeline-${session.id}-${item.turn.id}`:undefined} key={`${item.kind}-${item.id}`} className={`event ${item.failed?"failed":""}`} onClick={()=>item.turn&&onTurn(item.turn)}><span className="time"><b>{absoluteTime(item.at)}</b><small>+{elapsed(session.started_at,item.at)}</small></span><span className={`etype ${item.kind.toLowerCase().replaceAll(/[^a-z]+/g,"-")}`}>{item.kind}</span><span className="eventDescription">{item.description}</span><span className="badge">{item.badge}</span></button>)}{shown.length===0&&<p className="empty">No events match this filter.</p>}{shown.length<filtered.length&&<button className="loadMore" onClick={()=>setLimit(value=>value+200)}>Show 200 more</button>}</div></section>}
+import {buildTimelineJourney,type JourneyCheckpoint} from "./timelineJourney";
+import {latestWindow} from "./timelineWindow";
 
-function eventDescription(event:Event){const payload=event.payload_redacted||{};return String(payload.text||payload.prompt||payload.tool_name||payload.name||event.event_subtype||event.event_type)}
+export function Timeline({session,onTurn,expanded=false}:{session:Session;onTurn:(turn:Turn)=>void;expanded?:boolean}){
+  const[limit,setLimit]=useState(50);
+  const viewport=useRef<HTMLDivElement>(null);
+  const journey=useMemo(()=>buildTimelineJourney(session),[session]);
+  const{shown,remaining}=latestWindow(journey,limit);
+  useLatestScroll(viewport,session.id);
+  useEffect(()=>setLimit(50),[session.id]);
+
+  const jumpTo=(id:string)=>{
+    if(!id)return;
+    scrollToCheckpoint(`timeline-checkpoint-${session.id}-${id}`,viewport.current);
+  };
+
+  return <section className={`card timelineCard ${expanded?"expandedTimeline":""}`}>
+    <div className="sectionTitle timelineHeading"><div><h3>Work journey</h3><small className="timelineStart">Started {absoluteTime(session.started_at)}</small></div><span className="pill">{journey.length} prompts</span></div>
+    <div className="timelineToolbar">
+      <label className="jumpControl"><span>Jump to prompt</span><select aria-label="Jump to timeline prompt" defaultValue="" onChange={event=>jumpTo(event.target.value)}><option value="">Choose a visible prompt</option>{shown.map(checkpoint=><option key={checkpoint.id} value={checkpoint.id}>Prompt {checkpoint.sequence} · {clockTime(checkpoint.startedAt)}</option>)}</select></label>
+      <div className="timelineSummary" aria-label="Timeline evidence summary"><span><b>{journey.length}</b> prompt checkpoints</span><span><b>{(session.tool_calls||[]).length.toLocaleString()}</b> tool calls summarized</span><span><b>{(session.tool_calls||[]).filter(call=>!call.success).length}</b> failed</span></div>
+    </div>
+    <div className="timelineJourneyLayout">
+      {expanded&&<aside className="timelineNavigator" aria-label="Timeline checkpoints"><header><b>Prompt index</b><small>{clockTime(session.started_at)} – {clockTime(session.ended_at)}</small></header><div>{shown.map(checkpoint=><button key={checkpoint.id} type="button" onClick={()=>jumpTo(checkpoint.id)}><span>{checkpoint.sequence}</span><span><b>{clockTime(checkpoint.startedAt)}</b><small>{checkpoint.prompt}</small></span></button>)}</div></aside>}
+      <div ref={viewport} className="timeline timelineScroll scrollViewport" aria-label="Conversation timeline entries" data-start-position="latest">
+        {remaining>0&&<button className="loadMore" onClick={()=>setLimit(journey.length)}>Show {remaining} earlier checkpoints</button>}
+        {shown.map(checkpoint=><Checkpoint key={checkpoint.id} checkpoint={checkpoint} sessionID={session.id} expanded={expanded} onTurn={onTurn}/>)}
+        {shown.length===0&&<p className="empty">No prompt checkpoints available.</p>}
+      </div>
+    </div>
+  </section>;
+}
+
+function Checkpoint({checkpoint,sessionID,expanded,onTurn}:{checkpoint:JourneyCheckpoint;sessionID:string;expanded:boolean;onTurn:(turn:Turn)=>void}){
+  const categories=Object.entries(checkpoint.categories).sort((a,b)=>b[1]-a[1]);
+  const notes=expanded?checkpoint.notes:checkpoint.notes.slice(0,2);
+  return <article id={`timeline-checkpoint-${sessionID}-${checkpoint.id}`} className={`journeyCheckpoint ${checkpoint.failedCount?"hasFailure":""}`}>
+    <div className="journeyRail" aria-hidden="true"><span>{checkpoint.sequence}</span></div>
+    <button className="journeyPrompt" type="button" aria-label={`Open prompt ${checkpoint.sequence}: ${checkpoint.prompt}`} onClick={()=>onTurn(checkpoint.turn)}>
+      <header><span className="journeyLabel">Prompt {checkpoint.sequence}</span><time dateTime={checkpoint.startedAt} title={absoluteTime(checkpoint.startedAt)}>{clockTime(checkpoint.startedAt)}</time><small>{duration(Math.max(0,new Date(checkpoint.endedAt).getTime()-new Date(checkpoint.startedAt).getTime()))}</small></header>
+      <p>{checkpoint.prompt}</p>
+      <div className="journeyStats"><span className="primaryStat">{checkpoint.toolCount.toLocaleString()} tool calls</span>{categories.slice(0,expanded?6:3).map(([category,count])=><span key={category}>{count.toLocaleString()} {category}</span>)}{checkpoint.mcpCount>0&&<span>{checkpoint.mcpCount.toLocaleString()} MCP</span>}{checkpoint.failedCount>0&&<span className="failureStat">{checkpoint.failedCount} failed</span>}</div>
+      {notes.length>0&&<div className="journeyNotes">{notes.map(note=><span key={note.id}><b>{note.kind}</b>{note.text}</span>)}{!expanded&&checkpoint.notes.length>notes.length&&<small>+{checkpoint.notes.length-notes.length} more notable events</small>}</div>}
+    </button>
+  </article>;
+}
+
+function clockTime(value:string){
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return "Unknown time";
+  return new Intl.DateTimeFormat(undefined,{hour:"numeric",minute:"2-digit",second:"2-digit"}).format(date);
+}

@@ -7,6 +7,7 @@ export function readRoute(pathname=window.location.pathname):Route{
   const match=pathname.match(/^\/sessions\/([^/]+)$/);
   if(match)return{view:"sessions",sessionId:decodeURIComponent(match[1])};
   if(pathname==="/compare")return{view:"compare"};
+  if(pathname==="/analytics")return{view:"analytics"};
   if(pathname==="/diagnostics")return{view:"diagnostics"};
   if(pathname==="/remote-access")return{view:"remote"};
   if(pathname==="/remote-review")return{view:"review"};
@@ -15,6 +16,7 @@ export function readRoute(pathname=window.location.pathname):Route{
 
 export function routePath(route:Route){
   if(route.view==="compare")return "/compare";
+  if(route.view==="analytics")return "/analytics";
   if(route.view==="diagnostics")return "/diagnostics";
   if(route.view==="remote")return "/remote-access";
   if(route.view==="review")return "/remote-review";

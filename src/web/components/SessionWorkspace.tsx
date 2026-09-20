@@ -1,5 +1,5 @@
 /** @module SessionWorkspace @description Provides accessible tabs for the human-facing views of one session. */
-import React,{useState} from "react";
+import React,{useEffect,useState} from "react";
 import type {Session,Turn} from "../types";
 import {ActivityMix} from "./ActivityMix";
 import {Collaboration} from "./Collaboration";
@@ -19,7 +19,15 @@ const tabs:{id:SessionTab;label:string;icon:string}[]=[
 
 export function SessionWorkspace({session,onTurn}:{session:Session;onTurn:(turn:Turn)=>void}){
   const[active,setActive]=useState<SessionTab>("conversation");
+  const[expanded,setExpanded]=useState(false);
   const metrics=session.metrics!;
+  const activeTab=tabs.find(tab=>tab.id===active)!;
+  useEffect(()=>{
+    if(!expanded)return;
+    const close=(event:KeyboardEvent)=>{if(event.key==="Escape")setExpanded(false)};
+    window.addEventListener("keydown",close);
+    return()=>window.removeEventListener("keydown",close);
+  },[expanded]);
   const moveTab=(event:React.KeyboardEvent<HTMLButtonElement>,index:number)=>{
     const direction=event.key==="ArrowRight"?1:event.key==="ArrowLeft"?-1:0;
     if(!direction&&event.key!=="Home"&&event.key!=="End")return;
@@ -28,15 +36,18 @@ export function SessionWorkspace({session,onTurn}:{session:Session;onTurn:(turn:
     setActive(tabs[next].id);
     event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
   };
-  return <section className="sessionWorkspace" aria-label="Selected session workspace">
-    <nav className="sessionTabs" role="tablist" aria-label="Session views">
-      {tabs.map((tab,index)=><button key={tab.id} id={`session-tab-${tab.id}`} role="tab" aria-selected={active===tab.id} aria-controls={`session-panel-${tab.id}`} tabIndex={active===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>moveTab(event,index)}><span aria-hidden="true">{tab.icon}</span>{tab.label}{tab.id==="conversation"&&<small>{metrics.turn_count}</small>}{tab.id==="timeline"&&<small>{(session.events?.length||0)+(session.tool_calls?.length||0)+metrics.turn_count}</small>}{tab.id==="tools"&&<small>{metrics.tool_calls+metrics.finding_count}</small>}</button>)}
-    </nav>
+  return <section className={`sessionWorkspace ${expanded?"expanded":""}`} aria-label="Selected session workspace">
+    <header className="workspaceHeader">
+      <nav className="sessionTabs" role="tablist" aria-label="Session views">
+        {tabs.map((tab,index)=><button key={tab.id} id={`session-tab-${tab.id}`} role="tab" aria-selected={active===tab.id} aria-controls={`session-panel-${tab.id}`} tabIndex={active===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>moveTab(event,index)}><span aria-hidden="true">{tab.icon}</span>{tab.label}{tab.id==="conversation"&&<small>{metrics.turn_count}</small>}{tab.id==="timeline"&&<small>{metrics.turn_count}</small>}{tab.id==="tools"&&<small>{metrics.tool_calls+metrics.finding_count}</small>}</button>)}
+      </nav>
+      <button className="workspaceExpandButton" type="button" aria-label={expanded?`Exit expanded ${activeTab.label} view`:`Expand ${activeTab.label} view`} aria-pressed={expanded} onClick={()=>setExpanded(value=>!value)}><span aria-hidden="true">{expanded?"↙":"⛶"}</span><b>{expanded?"Restore":"Expand"}</b></button>
+    </header>
     <div className="sessionTabPanel" id={`session-panel-${active}`} role="tabpanel" aria-labelledby={`session-tab-${active}`}>
       {active==="conversation"&&<Transcript session={session}/>}
-      {active==="timeline"&&<Timeline session={session} onTurn={onTurn}/>}
+      {active==="timeline"&&<Timeline session={session} onTurn={onTurn} expanded={expanded}/>}
       {active==="tools"&&<div className="sessionSplitPanel"><ToolUsage session={session}/><Findings findings={session.findings||[]}/></div>}
-      {active==="overview"&&<div className="overviewScroll scrollViewport"><div className="overviewGrid"><SessionContext session={session}/><ActivityMix explorationRatio={metrics.exploration_ratio}/><Collaboration sessionId={session.id}/></div></div>}
+      {active==="overview"&&<div className="overviewScroll scrollViewport" aria-label="Session overview entries"><div className="overviewGrid"><SessionContext session={session}/><ActivityMix explorationRatio={metrics.exploration_ratio}/><Collaboration sessionId={session.id}/></div></div>}
     </div>
   </section>;
 }

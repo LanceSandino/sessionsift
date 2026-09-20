@@ -20,12 +20,15 @@ func TestResolveAndEnsurePrivateState(t *testing.T) {
 	if paths.ChatGPTExport != filepath.Join(home, "chatgpt-export.path") {
 		t.Fatalf("chatgpt export config=%s", paths.ChatGPTExport)
 	}
+	if paths.Backups != filepath.Join(home, "backups") {
+		t.Fatalf("backups=%s", paths.Backups)
+	}
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(paths.RawEvents)
+	info, err := os.Stat(paths.Backups)
 	if err != nil || !info.IsDir() {
-		t.Fatalf("raw dir error=%v", err)
+		t.Fatalf("backup dir error=%v", err)
 	}
 }
 

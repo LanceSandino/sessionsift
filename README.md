@@ -48,6 +48,7 @@ The main commands are:
 sessionsift start
 sessionsift stop
 sessionsift status
+sessionsift backup
 sessionsift import
 sessionsift import-chatgpt <export.json-or-zip>
 sessionsift sessions
@@ -92,7 +93,9 @@ The chat transcript, conversation timeline, and tools-used panels are fixed-heig
 scroll regions. Each opens at the latest activity and provides prompt checkpoint
 buttons for jumping back through a long session.
 
-`sessionsift mcp` runs the seven-tool, read-only local MCP server over stdio.
+`sessionsift mcp` runs the ten-tool, read-only local MCP server over stdio,
+including privacy-safe aggregate analytics, recurring-correction patterns, and
+context recommendations.
 `sessionsift setup mcp` prints a ready-to-review Codex configuration. Session
 lists page explicitly and tool responses stay bounded and redacted. See the
 [MCP connection guide](docs/mcp-connection-guide.md) for local and scoped remote
@@ -113,10 +116,16 @@ credentials. See [remote architecture](docs/remote-architecture.md). A public
 deployment still needs operator-supplied TLS, durable shared bridge state, and
 an explicit `SESSIONSIFT_ALLOWED_ORIGINS` allowlist.
 
-Remote MCP uses scoped bearer grants and MCP `2025-11-25`. It works with clients
-that accept custom headers; it does not claim ChatGPT MCP connector support,
-which requires OAuth. ChatGPT transcript import remains fully supported through
-user-provided exports.
+Two remote MCP paths are available. `/remote/v1/mcp` retains scoped bearer
+grants and legacy MCP `2025-11-25` for header-capable clients. `/mcp` uses the
+official MCP SDK, current protocol negotiation, Cloudflare Access signed
+identity, and a separate locally approved email grant for ChatGPT. Google can
+remain the upstream Access login provider while Cloudflare Managed OAuth
+supplies OAuth discovery, registration, consent, and refresh tokens. See the
+[deployment guide](docs/deployment.md) for the required routes and settings.
+
+ChatGPT transcript import remains fully supported through user-provided exports
+and is independent of ChatGPT MCP access.
 
 ## Live events
 
@@ -147,9 +156,14 @@ the source supports it. Later user messages observed in the same turn appear as
 `STEER / QUEUE`; the available local records do not reliably distinguish those
 two delivery modes, so SessionSift does not guess.
 
-Conversation, Compare, and Diagnostics screens use History API navigation and
-deep links such as `/sessions/<id>`, `/compare`, and `/diagnostics` without page
-reloads. Browser back and forward navigation is supported.
+Conversation, Compare, Analytics, and Diagnostics screens use History API
+navigation and deep links such as `/sessions/<id>`, `/compare`, `/analytics`,
+and `/diagnostics` without page reloads. Browser back and forward navigation is
+supported.
+
+The Analytics screen aggregates session, token, cache, tool, source, model,
+repository, failure, and deterministic finding signals. It intentionally omits
+prompt text, response text, tool arguments, and tool results.
 
 Codex guardian/auto-review transcripts are imported for completeness but are
 classified as internal reviews and hidden from normal session lists. Enable the
@@ -168,7 +182,10 @@ classified as internal reviews and hidden from normal session lists. Enable the
 - SessionSift does not read `~/.codex/auth.json`, upload data, or create cloud
   accounts.
 - Remote features are inert until the owner creates and approves a pairing;
-  grants are hashed at rest, expire, are rate-limited, audited, and revocable.
+  grants are hashed or identity-bound at rest, expire, are rate-limited,
+  audited, and revocable.
+- SQLite readiness is checked at `/readyz`; consistent private backups are made
+  at startup and daily with seven-snapshot retention.
 
 Codex transcript and ChatGPT export records are treated as changing input
 formats. Each adapter is versioned, preserves warnings, and maps raw records
@@ -197,14 +214,16 @@ The test command enforces coverage floors and builds the embedded frontend.
 ## API
 
 The localhost API exposes session lists, session details, turns, events,
-findings, metrics, and comparisons below `/api/v1`. Session lists exclude
+findings, metrics, comparisons, and privacy-safe analytics below `/api/v1`. Session lists exclude
 internal reviews by default; pass `include_internal=true` to include them. Hook
 ingestion is available at `/internal/hooks/codex`, OTLP logs at `/v1/logs`, OTLP
-metrics at `/v1/metrics`, and `/healthz` reports collector health.
+metrics at `/v1/metrics`, `/healthz` reports process liveness, and `/readyz`
+checks database integrity.
 
 `POST /api/v1/protocol` exposes the localhost-only typed Session Protocol. Its
 v1 registry contains session list/detail/metrics/timeline/findings/comparison,
-turn detail, and connection-status operations. Every operation defines its
+turn detail, connection-status, analytics, recurring-correction, and context
+recommendation operations. Every operation defines its
 capability, audit category, response-size limit, redaction policy, timeout, and
 pagination behavior. Generic shell, process, filesystem, command, and SQL
 operations are intentionally absent and fail closed.

@@ -2,14 +2,17 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/accessauth"
 	"github.com/LanceSandino/sessionsift/src/internal/agent/service"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/otel"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
@@ -27,6 +30,12 @@ func Handler(store *storage.Store) http.Handler {
 
 // HandlerWithRemote adds opt-in owner and scoped remote routes while retaining localhost authority.
 func HandlerWithRemote(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity) http.Handler {
+	verifier, _ := accessauth.NewFromEnv(nil)
+	return HandlerWithRemoteAccess(store, remoteManager, identity, verifier, strings.TrimRight(os.Getenv("SESSIONSIFT_PUBLIC_URL"), "/"))
+}
+
+// HandlerWithRemoteAccess allows production Access verification and deterministic integration tests.
+func HandlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string) http.Handler {
 	agent := service.NewLocal(store)
 	assets, _ := fs.Sub(webui.Assets, "dist")
 	web := webHandler(assets)
@@ -35,14 +44,18 @@ func HandlerWithRemote(store *storage.Store, remoteManager *remote.Manager, iden
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:")
 		switch {
-		case remoteManager != nil && (strings.HasPrefix(r.URL.Path, "/api/v1/remote/") || strings.HasPrefix(r.URL.Path, "/remote/v1/")):
-			remoteRoute(store, remoteManager, identity, w, r)
+		case remoteManager != nil && (strings.HasPrefix(r.URL.Path, "/api/v1/remote/") || strings.HasPrefix(r.URL.Path, "/remote/v1/") || r.URL.Path == "/mcp"):
+			remoteRoute(store, remoteManager, identity, verifier, publicURL, w, r)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource"):
+			protectedResourceMetadata(publicURL, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
 			listSessions(agent, w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/sessions/"):
 			sessionRoute(agent, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/compare":
 			compare(agent, w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/analytics":
+			analyticsReport(agent, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/protocol":
 			receiveProtocol(agent, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/internal/hooks/codex":
@@ -53,12 +66,27 @@ func HandlerWithRemote(store *storage.Store, remoteManager *remote.Manager, iden
 			receiveOTelMetrics(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		case r.Method == http.MethodGet && r.URL.Path == "/readyz":
+			readyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := store.Health(readyCtx); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 		case r.Method == http.MethodGet:
 			web.ServeHTTP(w, r)
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
 	})
+}
+
+func analyticsReport(agent *service.Service, w http.ResponseWriter, r *http.Request) {
+	data, ok := execute(agent, w, r, protocol.AnalysisPatterns, struct{}{})
+	if ok {
+		writeJSON(w, http.StatusOK, data)
+	}
 }
 
 func receiveProtocol(agent *service.Service, w http.ResponseWriter, r *http.Request) {

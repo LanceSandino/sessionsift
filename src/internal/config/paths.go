@@ -13,6 +13,7 @@ type Paths struct {
 	Logs           string
 	RawEvents      string
 	Exports        string
+	Backups        string
 	PID            string
 	ChatGPTExport  string
 	DeviceIdentity string
@@ -30,12 +31,12 @@ func Resolve() (Paths, error) {
 		home = filepath.Join(userHome, ".sessionsift")
 	}
 	home = filepath.Clean(home)
-	return Paths{Home: home, Database: filepath.Join(home, "sessionsift.db"), Logs: filepath.Join(home, "logs"), RawEvents: filepath.Join(home, "raw", "events"), Exports: filepath.Join(home, "exports"), PID: filepath.Join(home, "sessionsift.pid"), ChatGPTExport: filepath.Join(home, "chatgpt-export.path"), DeviceIdentity: filepath.Join(home, "device-identity.json"), RemoteState: filepath.Join(home, "remote-state.json")}, nil
+	return Paths{Home: home, Database: filepath.Join(home, "sessionsift.db"), Logs: filepath.Join(home, "logs"), RawEvents: filepath.Join(home, "raw", "events"), Exports: filepath.Join(home, "exports"), Backups: filepath.Join(home, "backups"), PID: filepath.Join(home, "sessionsift.pid"), ChatGPTExport: filepath.Join(home, "chatgpt-export.path"), DeviceIdentity: filepath.Join(home, "device-identity.json"), RemoteState: filepath.Join(home, "remote-state.json")}, nil
 }
 
 // Ensure creates only product-owned state directories with private permissions.
 func (p Paths) Ensure() error {
-	for _, path := range []string{p.Home, p.Logs, p.RawEvents, p.Exports} {
+	for _, path := range []string{p.Home, p.Logs, p.RawEvents, p.Exports, p.Backups} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return err
 		}

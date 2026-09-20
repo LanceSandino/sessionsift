@@ -40,6 +40,16 @@ describe("App",()=>{
     await waitFor(()=>expect(fetch).toHaveBeenCalled());
   });
 
+  it("loads analytics through Ajax navigation",async()=>{
+    const analytics={summary:{sessions:1,turns:2,duration_ms:600000,input_tokens:142000,cached_input_tokens:28000,output_tokens:18000,reasoning_tokens:4000,cache_ratio:.2,tool_calls:3,mcp_calls:1,app_tool_calls:0,failed_tool_calls:1,findings:1},daily:[],sources:[],models:[],repositories:[],tools:[],findings:[],recommendations:[]};
+    vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL)=>{const path=String(input);if(path==="/api/v1/analytics")return response(analytics);if(path==="/api/v1/sessions/s1")return response(detail);return response([summary])}));
+    render(<App/>);
+    expect(await screen.findByRole("heading",{name:"Fix authentication middleware"})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link",{name:/Analytics/}));
+    expect(await screen.findByRole("heading",{name:"Analytics"})).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/analytics");
+  });
+
   it("shows a useful local API error",async()=>{
     vi.stubGlobal("fetch",vi.fn(()=>Promise.resolve(new Response("",{status:503}))));
     render(<App/>);

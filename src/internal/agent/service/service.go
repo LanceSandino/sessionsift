@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/analytics"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 )
@@ -194,11 +195,40 @@ func (s *Service) execute(ctx context.Context, request protocol.Request) (any, p
 		return s.turn(ctx, arguments)
 	case protocol.ConnectionStatus:
 		return ConnectionStatusResponse{}, protocol.StatusOK, nil
+	case protocol.AnalysisPatterns:
+		report, err := s.analytics(ctx)
+		return report, protocol.StatusOK, err
+	case protocol.AnalysisCorrections:
+		report, err := s.analytics(ctx)
+		if err != nil {
+			return nil, protocol.StatusError, err
+		}
+		values := make([]analytics.FindingAggregate, 0)
+		for _, finding := range report.Findings {
+			if finding.Type == "possible_scope_correction" {
+				values = append(values, finding)
+			}
+		}
+		return values, protocol.StatusOK, nil
+	case protocol.ContextRecommendations:
+		report, err := s.analytics(ctx)
+		if err != nil {
+			return nil, protocol.StatusError, err
+		}
+		return report.Recommendations, protocol.StatusOK, nil
 	case protocol.ConnectionDisconnect:
 		return nil, protocol.StatusInvalidRequest, errors.New("no remote connection exists in local-only v1")
 	default:
 		return nil, protocol.StatusInvalidRequest, errors.New("unknown operation")
 	}
+}
+
+func (s *Service) analytics(ctx context.Context) (analytics.Report, error) {
+	sessions, err := s.repository.ListSessions(ctx)
+	if err != nil {
+		return analytics.Report{}, err
+	}
+	return analytics.Build(sessions), nil
 }
 
 func (s *Service) list(ctx context.Context, arguments ListArguments) (any, protocol.Status, error) {

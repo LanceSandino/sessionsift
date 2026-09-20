@@ -39,7 +39,7 @@ func TestServerInitializesListsAndCallsSafeTools(t *testing.T) {
 		t.Fatalf("responses=%d output=%s", len(responses), output.String())
 	}
 	tools := responses[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 7 {
+	if len(tools) != 10 {
 		t.Fatalf("tools=%d", len(tools))
 	}
 	result := responses[2]["result"].(map[string]any)

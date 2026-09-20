@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/accessauth"
 	"github.com/LanceSandino/sessionsift/src/internal/agent/service"
 	mcpserver "github.com/LanceSandino/sessionsift/src/internal/mcp"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
@@ -19,10 +21,21 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
 
-func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.Identity, w http.ResponseWriter, r *http.Request) {
+func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/remote/status":
-		writeJSON(w, http.StatusOK, map[string]any{"device_id": identity.ID, "pending_pairings": manager.PendingPairings(), "connections": manager.Connections(), "audit": manager.Audit()})
+		writeJSON(w, http.StatusOK, map[string]any{"device_id": identity.ID, "pending_pairings": manager.PendingPairings(), "connections": manager.Connections(), "oauth_grants": manager.OAuthGrants(), "oauth_configured": verifier != nil, "audit": manager.Audit()})
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote/oauth/grants":
+		var body struct {
+			Principal    string               `json:"principal"`
+			Operations   []protocol.Operation `json:"operations"`
+			DurationDays int                  `json:"duration_days"`
+		}
+		if !decodeRemote(w, r, &body) {
+			return
+		}
+		grant, err := manager.ApproveOAuthPrincipal(body.Principal, body.Operations, time.Duration(body.DurationDays)*24*time.Hour)
+		remoteWrite(w, http.StatusCreated, grant, err)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote/pairings":
 		pairing, err := manager.CreatePairing(identity.ID)
 		remoteWrite(w, http.StatusCreated, pairing, err)
@@ -106,6 +119,8 @@ func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.
 		remoteProtocol(store, manager, w, r)
 	case r.URL.Path == "/remote/v1/mcp":
 		remoteMCP(store, manager, w, r)
+	case r.URL.Path == "/mcp":
+		oauthMCP(store, manager, verifier, publicURL, w, r)
 	case strings.HasPrefix(r.URL.Path, "/remote/v1/annotations"):
 		remoteCollaboration(manager, protocol.AnnotationList, protocol.AnnotationCreate, w, r)
 	case strings.HasPrefix(r.URL.Path, "/remote/v1/reviews"):
@@ -113,6 +128,100 @@ func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func oauthMCP(store *storage.Store, manager *remote.Manager, verifier accessauth.Verifier, publicURL string, w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !allowMCPOrigin(w, r) {
+		mcpRefusal(w, http.StatusForbidden, -32600, "origin is not allowed", nil)
+		return
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if verifier == nil {
+		mcpRefusal(w, http.StatusServiceUnavailable, -32000, "Cloudflare Access origin verification is not configured", nil)
+		return
+	}
+	principal, err := verifier.Verify(r.Context(), r.Header.Get("Cf-Access-Jwt-Assertion"))
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", oauthChallenge(publicURL, r))
+		mcpRefusal(w, http.StatusUnauthorized, -32600, "OAuth authentication required", nil)
+		return
+	}
+	grant, retryAfter, err := manager.AllowPrincipalRequest(principal.Email)
+	if err != nil {
+		if strings.Contains(err.Error(), "rate limit") {
+			seconds := int(retryAfter.Seconds()) + 1
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			mcpRefusal(w, http.StatusTooManyRequests, -32000, "rate limit exceeded", map[string]int{"retry_after": seconds})
+			return
+		}
+		mcpRefusal(w, http.StatusForbidden, -32001, "this OAuth identity has not been locally approved or its grant expired", nil)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	if err != nil {
+		mcpRefusal(w, http.StatusRequestEntityTooLarge, -32600, "MCP frame too large", nil)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	allowed := map[protocol.Operation]bool{}
+	for _, operation := range grant.Operations {
+		allowed[operation] = true
+	}
+	agent := service.New(store, remote.NewPrincipalAuthorizer(manager, principal.Email))
+	capture := &auditWriter{ResponseWriter: w, status: http.StatusOK}
+	mcpserver.SDKHTTPHandler(agent, func(operation protocol.Operation) bool { return allowed[operation] }).ServeHTTP(capture, r)
+	manager.RecordAudit(remote.AuditRecord{ClientID: principal.Email, GrantID: grant.ID, Operation: mcpOperation(body), Allowed: capture.status < 400, ResponseBytes: capture.bytes, Status: "oauth_mcp"})
+}
+
+type auditWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (writer *auditWriter) WriteHeader(status int) {
+	writer.status = status
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func (writer *auditWriter) Write(body []byte) (int, error) {
+	written, err := writer.ResponseWriter.Write(body)
+	writer.bytes += written
+	return written, err
+}
+
+func protectedResourceMetadata(publicURL string, w http.ResponseWriter, r *http.Request) {
+	resource := publicResourceURL(publicURL, r)
+	issuer := strings.TrimRight(os.Getenv("SESSIONSIFT_ACCESS_ISSUER"), "/")
+	servers := []string{}
+	if issuer != "" {
+		servers = append(servers, issuer)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"resource": resource, "authorization_servers": servers,
+		"scopes_supported":       []string{"openid", "profile", "email", "offline_access", "session.read"},
+		"resource_documentation": resource + "/docs/mcp",
+	})
+}
+
+func publicResourceURL(configured string, r *http.Request) string {
+	configured = strings.TrimRight(strings.TrimSpace(configured), "/")
+	if configured != "" {
+		return configured
+	}
+	scheme := "https"
+	if r.TLS == nil && (strings.HasPrefix(r.Host, "127.0.0.1") || strings.HasPrefix(r.Host, "localhost")) {
+		scheme = "http"
+	}
+	return scheme + "://" + r.Host
+}
+
+func oauthChallenge(publicURL string, r *http.Request) string {
+	return `Bearer resource_metadata="` + publicResourceURL(publicURL, r) + `/.well-known/oauth-protected-resource", scope="session.read"`
 }
 
 func remoteMCP(store *storage.Store, manager *remote.Manager, w http.ResponseWriter, r *http.Request) {
