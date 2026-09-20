@@ -1,6 +1,6 @@
 /** @module AppTest @description Exercises the live local-data UI workflow. */
 import "@testing-library/jest-dom/vitest";
-import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
 import {afterEach,describe,expect,it,vi} from "vitest";
 import {App} from "./App";
 
@@ -12,12 +12,23 @@ function response(value:unknown){return Promise.resolve(new Response(JSON.string
 afterEach(()=>{cleanup();vi.unstubAllGlobals();window.history.replaceState({},"","/")});
 
 describe("App",()=>{
+  it("keeps the public root URL stable after selecting the first session",async()=>{
+    window.history.replaceState({},"","/");
+    vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL)=>String(input)==="/api/v1/sessions/s1"?response(detail):response([summary])));
+    render(<App/>);
+    expect(await screen.findByRole("heading",{name:"Fix authentication middleware"})).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
+  });
+
   it("loads sessions, opens turn evidence, compares, and shows diagnostics",async()=>{
     vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL)=>{const path=String(input);if(path.startsWith("/api/v1/compare"))return response({a:detail,b:detail,metrics_a:metrics,metrics_b:metrics,differences:["Session A used 3 tool calls; Session B used 3."]});if(path==="/api/v1/sessions/s1")return response(detail);return response([summary]);}));
     const {container}=render(<App/>);
     expect(await screen.findByRole("heading",{name:"Fix authentication middleware"})).toBeInTheDocument();
     expect(container.firstElementChild).toHaveClass("sessionLayout");
-    fireEvent.click(screen.getByText("Fix the auth bug"));
+    expect(container.querySelector(".content")).toHaveClass("sessionContent");
+    expect(screen.getByRole("tablist",{name:"Session views"})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab",{name:/Timeline/}));
+    fireEvent.click(within(screen.getByLabelText("Conversation timeline entries")).getByText("Fix the auth bug"));
     expect(screen.getByRole("dialog")).toHaveTextContent("Conversation turn");
     fireEvent.click(screen.getByLabelText("Close turn detail"));
     fireEvent.click(screen.getByRole("button",{name:/^Compare$/}));
@@ -45,5 +56,17 @@ describe("App",()=>{
     window.history.back();
     window.dispatchEvent(new PopStateEvent("popstate"));
     await waitFor(()=>expect(window.location.pathname).toBe("/sessions/s1"));
+  });
+
+  it("keeps a visible loading surface when session detail wins the refresh race",async()=>{
+    window.history.replaceState({},"","/sessions/s1");
+    let releaseSessions:(value:Response)=>void=()=>{};
+    const sessionsResponse=new Promise<Response>(resolve=>{releaseSessions=resolve});
+    vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL)=>String(input)==="/api/v1/sessions/s1"?response(detail):sessionsResponse));
+    render(<App/>);
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith("/api/v1/sessions/s1",expect.anything()));
+    expect(screen.getByText("Importing local conversations…")).toBeInTheDocument();
+    releaseSessions(new Response(JSON.stringify([summary]),{status:200,headers:{"Content-Type":"application/json"}}));
+    expect(await screen.findByRole("heading",{name:"Fix authentication middleware"})).toBeInTheDocument();
   });
 });

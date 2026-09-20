@@ -3,9 +3,9 @@ package domain
 
 import "time"
 
-const ParserVersion = "codex-jsonl-v8"
+const ParserVersion = "codex-jsonl-v9"
 
-const ChatGPTExportVersion = "chatgpt-export-v1"
+const ChatGPTExportVersion = "chatgpt-export-v2"
 
 // SessionSource identifies the product that produced a normalized session.
 type SessionSource string

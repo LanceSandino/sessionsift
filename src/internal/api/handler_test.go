@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
+	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
 
@@ -101,6 +103,54 @@ func TestMissingAndStaticRoutes(t *testing.T) {
 	}
 }
 
+func TestWebShellRefreshCannotUseStaleBootAssets(t *testing.T) {
+	handler := Handler(testStore(t))
+
+	for _, target := range []string{"/", "/sessions/s1", "/remote-access"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", target, response.Code, response.Body.String())
+		}
+		if got := response.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+			t.Errorf("%s Cache-Control=%q", target, got)
+		}
+		if !strings.Contains(response.Body.String(), "SessionSift is loading") {
+			t.Errorf("%s does not contain the visible boot fallback", target)
+		}
+	}
+
+	home := httptest.NewRecorder()
+	handler.ServeHTTP(home, httptest.NewRequest(http.MethodGet, "/", nil))
+	start := strings.Index(home.Body.String(), `src="/assets/`)
+	if start < 0 {
+		t.Fatal("built index does not reference a hashed script")
+	}
+	start += len(`src="`)
+	end := strings.Index(home.Body.String()[start:], `"`)
+	if end < 0 {
+		t.Fatal("built index script reference is malformed")
+	}
+	assetPath := home.Body.String()[start : start+end]
+	asset := httptest.NewRecorder()
+	handler.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, assetPath, nil))
+	if asset.Code != http.StatusOK {
+		t.Fatalf("asset %s status=%d", assetPath, asset.Code)
+	}
+	if got := asset.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Errorf("asset Cache-Control=%q", got)
+	}
+
+	stale := httptest.NewRecorder()
+	handler.ServeHTTP(stale, httptest.NewRequest(http.MethodGet, "/assets/index-stale.js", nil))
+	if stale.Code != http.StatusNotFound {
+		t.Fatalf("stale asset status=%d", stale.Code)
+	}
+	if got := stale.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+		t.Errorf("stale asset Cache-Control=%q", got)
+	}
+}
+
 func TestBadRoutesAndOTelAcceptance(t *testing.T) {
 	handler := Handler(testStore(t))
 	cases := []struct {
@@ -148,5 +198,182 @@ func TestClosedStoreReturnsInternalError(t *testing.T) {
 func TestProtocolStatusMapping(t *testing.T) {
 	if statusFor("invalid_request") != http.StatusBadRequest || statusFor("denied") != http.StatusForbidden || statusFor("not_found") != http.StatusNotFound || statusFor("error") != http.StatusInternalServerError {
 		t.Fatal("protocol status mapping changed")
+	}
+}
+
+func TestRemotePairingApprovalProtocolAndCollaborationRoutes(t *testing.T) {
+	store := testStore(t)
+	directory := t.TempDir()
+	manager, err := remote.OpenManager(filepath.Join(directory, "remote.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := remote.LoadOrCreateIdentity(filepath.Join(directory, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := HandlerWithRemote(store, manager, identity)
+	call := func(method, path, body, token string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	created := call(http.MethodPost, "/api/v1/remote/pairings", `{}`, "")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", created.Code, created.Body.String())
+	}
+	var pairing remote.Pairing
+	_ = json.Unmarshal(created.Body.Bytes(), &pairing)
+	claimed := call(http.MethodPost, "/api/v1/remote/pairings/claim", `{"code":"`+pairing.Code+`","reviewer":"reviewer","operations":["session.list","session.get"]}`, "")
+	if claimed.Code != http.StatusOK {
+		t.Fatalf("claim=%d %s", claimed.Code, claimed.Body.String())
+	}
+	approved := call(http.MethodPost, "/api/v1/remote/pairings/approve", `{"code":"`+pairing.Code+`","duration_minutes":30}`, "")
+	if approved.Code != http.StatusOK {
+		t.Fatalf("approve=%d %s", approved.Code, approved.Body.String())
+	}
+	var grant struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(approved.Body.Bytes(), &grant)
+	read := call(http.MethodPost, "/remote/v1/protocol", `{"version":1,"request_id":"remote-http","operation":"session.list","arguments":{}}`, grant.Token)
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"Test session"`) {
+		t.Fatalf("read=%d %s", read.Code, read.Body.String())
+	}
+	mcpRead := call(http.MethodPost, "/remote/v1/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}`, grant.Token)
+	if mcpRead.Code != http.StatusOK || !strings.Contains(mcpRead.Body.String(), `"Test session"`) {
+		t.Fatalf("mcp=%d %s", mcpRead.Code, mcpRead.Body.String())
+	}
+	denied := call(http.MethodPost, "/remote/v1/protocol", `{"version":1,"request_id":"remote-denied","operation":"session.metrics","arguments":{"session_id":"s1"}}`, grant.Token)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("denied=%d %s", denied.Code, denied.Body.String())
+	}
+	annotation := call(http.MethodPost, "/api/v1/remote/annotations", `{"session_id":"s1","turn_id":"t1","author":"reviewer","body":"Check this"}`, "")
+	if annotation.Code != http.StatusCreated {
+		t.Fatalf("annotation=%d", annotation.Code)
+	}
+	review := call(http.MethodPost, "/api/v1/remote/reviews", `{"session_id":"s1","reviewer":"reviewer","status":"approved","summary":"Looks good"}`, "")
+	if review.Code != http.StatusCreated {
+		t.Fatalf("review=%d", review.Code)
+	}
+	status := call(http.MethodGet, "/api/v1/remote/status", "", "")
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), identity.ID) || !strings.Contains(status.Body.String(), "reviewer") {
+		t.Fatalf("status=%d %s", status.Code, status.Body.String())
+	}
+}
+
+func TestRemoteRouteErrorsListsAndKillSwitches(t *testing.T) {
+	store := testStore(t)
+	directory := t.TempDir()
+	manager, _ := remote.OpenManager(filepath.Join(directory, "remote.json"))
+	identity, _ := remote.LoadOrCreateIdentity(filepath.Join(directory, "identity.json"))
+	handler := HandlerWithRemote(store, manager, identity)
+	call := func(method, path, body, token string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for _, item := range []struct {
+		method, path, body string
+		status             int
+	}{{http.MethodPost, "/remote/v1/protocol", `{}`, http.StatusUnauthorized}, {http.MethodPost, "/remote/v1/mcp", `{}`, http.StatusUnauthorized}, {http.MethodPost, "/api/v1/remote/pairings/claim", `bad`, http.StatusBadRequest}, {http.MethodPost, "/api/v1/remote/grants/revoke", `{"grant_id":"missing"}`, http.StatusBadRequest}, {http.MethodPost, "/api/v1/remote/connections/disconnect", `{"connection_id":"missing"}`, http.StatusBadRequest}, {http.MethodGet, "/api/v1/remote/missing", "", http.StatusNotFound}} {
+		response := call(item.method, item.path, item.body, "")
+		if response.Code != item.status {
+			t.Fatalf("%s status=%d body=%s", item.path, response.Code, response.Body.String())
+		}
+	}
+	pairing, _ := manager.CreatePairing(identity.ID)
+	_, _ = manager.ClaimPairing(pairing.Code, "reviewer", []protocol.Operation{protocol.SessionList})
+	grant, token, _ := manager.ApprovePairing(pairing.Code, time.Hour)
+	connections := manager.Connections()
+	if response := call(http.MethodPost, "/remote/v1/protocol", `bad`, token); response.Code != http.StatusBadRequest {
+		t.Fatalf("bad protocol=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/remote/v1/mcp", `not-json`, token); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "parse error") {
+		t.Fatalf("bad mcp=%d %s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/api/v1/remote/connections/disconnect", `{"connection_id":"`+connections[0].ID+`"}`, ""); response.Code != http.StatusOK {
+		t.Fatalf("disconnect=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/api/v1/remote/grants/revoke", `{"grant_id":"`+grant.ID+`"}`, ""); response.Code != http.StatusOK {
+		t.Fatalf("revoke=%d", response.Code)
+	}
+	for _, path := range []string{"/api/v1/remote/annotations?session_id=s1", "/api/v1/remote/reviews?session_id=s1"} {
+		if response := call(http.MethodGet, path, "", ""); response.Code != http.StatusOK {
+			t.Fatalf("list=%d", response.Code)
+		}
+	}
+}
+
+func TestRemoteMCPTransportConformanceAndCollaboration(t *testing.T) {
+	t.Setenv("SESSIONSIFT_ALLOWED_ORIGINS", "https://review.example")
+	store := testStore(t)
+	directory := t.TempDir()
+	manager, _ := remote.OpenManager(filepath.Join(directory, "remote.json"))
+	identity, _ := remote.LoadOrCreateIdentity(filepath.Join(directory, "identity.json"))
+	pairing, _ := manager.CreatePairing(identity.ID)
+	operations := []protocol.Operation{protocol.SessionList, protocol.AnnotationList, protocol.AnnotationCreate, protocol.ReviewList, protocol.ReviewCreate}
+	_, _ = manager.ClaimPairing(pairing.Code, "reviewer", operations)
+	_, token, _ := manager.ApprovePairing(pairing.Code, time.Hour)
+	handler := HandlerWithRemote(store, manager, identity)
+	call := func(method, path, body, bearer, origin, version string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		if bearer != "" {
+			request.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if origin != "" {
+			request.Header.Set("Origin", origin)
+		}
+		if version != "" {
+			request.Header.Set("MCP-Protocol-Version", version)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for _, item := range []struct {
+		method, body, bearer, origin, version string
+		status                                int
+	}{
+		{http.MethodGet, "", "", "", "", http.StatusMethodNotAllowed},
+		{http.MethodOptions, "", "", "https://review.example", "", http.StatusNoContent},
+		{http.MethodPost, `{}`, token, "https://attacker.example", "", http.StatusForbidden},
+		{http.MethodPost, `{}`, token, "", "1900-01-01", http.StatusBadRequest},
+		{http.MethodPost, `[{"jsonrpc":"2.0","id":1,"method":"ping"}]`, token, "", "", http.StatusBadRequest},
+		{http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, token, "", "", http.StatusAccepted},
+		{http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, "bad", "", "", http.StatusUnauthorized},
+	} {
+		response := call(item.method, "/remote/v1/mcp", item.body, item.bearer, item.origin, item.version)
+		if response.Code != item.status {
+			t.Fatalf("method=%s status=%d want=%d body=%s", item.method, response.Code, item.status, response.Body.String())
+		}
+		if item.status >= 400 && !strings.Contains(response.Body.String(), `"jsonrpc":"2.0"`) {
+			t.Fatalf("non JSON-RPC refusal: %s", response.Body.String())
+		}
+	}
+	annotation := call(http.MethodPost, "/remote/v1/annotations", `{"session_id":"s1","author":"reviewer","body":"note"}`, token, "", "")
+	if annotation.Code != http.StatusCreated {
+		t.Fatalf("annotation=%d %s", annotation.Code, annotation.Body.String())
+	}
+	if response := call(http.MethodGet, "/remote/v1/annotations?session_id=s1", "", token, "", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "note") {
+		t.Fatalf("annotations=%d %s", response.Code, response.Body.String())
+	}
+	review := call(http.MethodPost, "/remote/v1/reviews", `{"session_id":"s1","reviewer":"reviewer","status":"approved","summary":"good"}`, token, "", "")
+	if review.Code != http.StatusCreated {
+		t.Fatalf("review=%d %s", review.Code, review.Body.String())
+	}
+	if response := call(http.MethodGet, "/remote/v1/reviews?session_id=s1", "", token, "", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "good") {
+		t.Fatalf("reviews=%d %s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPut, "/remote/v1/reviews", "", token, "", ""); response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("method status=%d", response.Code)
 	}
 }

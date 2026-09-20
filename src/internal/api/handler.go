@@ -15,20 +15,28 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"github.com/LanceSandino/sessionsift/src/internal/redact"
+	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 	"github.com/LanceSandino/sessionsift/src/webui"
 )
 
 // Handler returns the complete localhost application handler.
 func Handler(store *storage.Store) http.Handler {
+	return HandlerWithRemote(store, nil, remote.Identity{})
+}
+
+// HandlerWithRemote adds opt-in owner and scoped remote routes while retaining localhost authority.
+func HandlerWithRemote(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity) http.Handler {
 	agent := service.NewLocal(store)
 	assets, _ := fs.Sub(webui.Assets, "dist")
-	static := http.FileServer(http.FS(assets))
+	web := webHandler(assets)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:")
 		switch {
+		case remoteManager != nil && (strings.HasPrefix(r.URL.Path, "/api/v1/remote/") || strings.HasPrefix(r.URL.Path, "/remote/v1/")):
+			remoteRoute(store, remoteManager, identity, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
 			listSessions(agent, w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/sessions/"):
@@ -46,12 +54,7 @@ func Handler(store *storage.Store) http.Handler {
 		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		case r.Method == http.MethodGet:
-			if strings.Contains(filepathBase(r.URL.Path), ".") {
-				static.ServeHTTP(w, r)
-				return
-			}
-			r.URL.Path = "/"
-			static.ServeHTTP(w, r)
+			web.ServeHTTP(w, r)
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
@@ -111,7 +114,7 @@ func receiveOTel(store *storage.Store, w http.ResponseWriter, r *http.Request) {
 func listSessions(agent *service.Service, w http.ResponseWriter, r *http.Request) {
 	data, ok := execute(agent, w, r, protocol.SessionList, service.ListArguments{IncludeInternal: r.URL.Query().Get("include_internal") == "true"})
 	if ok {
-		writeJSON(w, http.StatusOK, data)
+		writeJSON(w, http.StatusOK, data.(service.SessionListResponse).Sessions)
 	}
 }
 
@@ -238,11 +241,4 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 func apiError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-}
-func filepathBase(path string) string {
-	path = strings.TrimSuffix(path, "/")
-	if index := strings.LastIndex(path, "/"); index >= 0 {
-		return path[index+1:]
-	}
-	return path
 }

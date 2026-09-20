@@ -27,6 +27,21 @@ Open <http://127.0.0.1:7777>. SessionSift imports both
 Starting the app also watches those directories and refreshes changed sessions
 every three seconds.
 
+When a Cloudflare Tunnel connector runs inside Docker Desktop and routes to
+`host.docker.internal`, start the origin with an explicit restricted tunnel
+listener:
+
+```bash
+SESSIONSIFT_ADDR=0.0.0.0:7777 \
+SESSIONSIFT_ALLOW_DOCKER_TUNNEL=true \
+SESSIONSIFT_ALLOWED_ORIGINS=https://sessionsift.example.com \
+./dist/sessionsift start
+```
+
+This opt-in mode accepts Docker Desktop's loopback-forwarded requests but
+rejects direct non-loopback network clients. Without the explicit flag,
+SessionSift continues to fall back to `127.0.0.1:7777`.
+
 The main commands are:
 
 ```text
@@ -38,11 +53,13 @@ sessionsift import-chatgpt <export.json-or-zip>
 sessionsift sessions
 sessionsift inspect <session-id>
 sessionsift compare <session-a> <session-b>
+sessionsift mcp
 sessionsift doctor
 sessionsift setup enable
 sessionsift setup hooks
 sessionsift setup otel
 sessionsift setup chatgpt
+sessionsift setup mcp
 sessionsift setup undo
 ```
 
@@ -70,6 +87,36 @@ The inspector groups every observed tool name and reports executions, failures,
 transport, and MCP server. Built-in tools, MCP calls, and app/connector calls are
 counted separately. Turn detail retains bounded redacted arguments and result
 previews when the source records provide them.
+
+The chat transcript, conversation timeline, and tools-used panels are fixed-height
+scroll regions. Each opens at the latest activity and provides prompt checkpoint
+buttons for jumping back through a long session.
+
+`sessionsift mcp` runs the seven-tool, read-only local MCP server over stdio.
+`sessionsift setup mcp` prints a ready-to-review Codex configuration. Session
+lists page explicitly and tool responses stay bounded and redacted. See the
+[MCP connection guide](docs/mcp-connection-guide.md) for local and scoped remote
+clients.
+
+## Remote review and collaboration
+
+The **Remote access** screen creates a ten-minute pairing code, shows requested
+capabilities, and requires an explicit Allow or Deny decision. Approved grants
+are short-lived and operation-scoped. Disconnecting a reviewer also revokes the
+grant. The **Reviewer portal** accepts a pairing code and, after approval, keeps
+the pasted grant in memory while loading only approved session operations.
+
+Annotations and review outcomes are redacted, capability-scoped collaboration
+records. The provider-neutral bridge uses outbound polling and signed device
+responses, so a deployment does not expose the workstation or provider
+credentials. See [remote architecture](docs/remote-architecture.md). A public
+deployment still needs operator-supplied TLS, durable shared bridge state, and
+an explicit `SESSIONSIFT_ALLOWED_ORIGINS` allowlist.
+
+Remote MCP uses scoped bearer grants and MCP `2025-11-25`. It works with clients
+that accept custom headers; it does not claim ChatGPT MCP connector support,
+which requires OAuth. ChatGPT transcript import remains fully supported through
+user-provided exports.
 
 ## Live events
 
@@ -120,6 +167,8 @@ classified as internal reviews and hidden from normal session lists. Enable the
   breaking the import.
 - SessionSift does not read `~/.codex/auth.json`, upload data, or create cloud
   accounts.
+- Remote features are inert until the owner creates and approves a pairing;
+  grants are hashed at rest, expire, are rate-limited, audited, and revocable.
 
 Codex transcript and ChatGPT export records are treated as changing input
 formats. Each adapter is versioned, preserves warnings, and maps raw records
@@ -140,6 +189,8 @@ The test command enforces coverage floors and builds the embedded frontend.
 
 - `src/cmd/sessionsift`: CLI entrypoint
 - `src/internal`: collector, parser, storage, analyzers, and HTTP API
+- `src/internal/mcp`: local and HTTP MCP protocol adapter
+- `src/internal/remote`: device identity, pairing, grants, bridge, and collaboration
 - `src/web`: React and TypeScript source
 - `src/webui`: generated assets embedded in the Go binary
 

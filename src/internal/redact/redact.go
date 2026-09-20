@@ -9,8 +9,12 @@ import (
 	"strings"
 )
 
+var namedCredential = regexp.MustCompile(`(?i)(\b(?:cf[-_]access[-_]client[-_](?:id|secret)|(?:cloudflare|openai|github|aws|azure|google)[-_](?:api[-_]?(?:key|token)|access[-_]?token|refresh[-_]?token|client[-_]?secret)|api[-_]?(?:key|token)|access[-_]?token|refresh[-_]?token|client[-_]?secret|password|authorization|cookie|set-cookie)\b[ \t]*[:=][ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
+
 var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9_]{16,})\b`),
+	regexp.MustCompile(`(?i)\bcfast_[a-z0-9_-]{20,}\b`),
+	regexp.MustCompile(`(?i)\b[a-f0-9]{32}\.access\b`),
 	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
 	regexp.MustCompile(`(?i)\b(bearer\s+)[a-z0-9._~+/-]+=*`),
 	regexp.MustCompile(`(?i)\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"']+`),
@@ -24,6 +28,7 @@ func Text(value string, maxBytes int) string {
 	for _, pattern := range patterns {
 		redacted = pattern.ReplaceAllString(redacted, "[REDACTED]")
 	}
+	redacted = namedCredential.ReplaceAllString(redacted, "$1[REDACTED]")
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		redacted = strings.ReplaceAll(redacted, home, "~")
 	}

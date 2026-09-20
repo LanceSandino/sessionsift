@@ -73,12 +73,16 @@ func TestExecuteBoundsTimelineAndFiltersInternalReviews(t *testing.T) {
 	}
 	agent := NewLocal(store)
 	list := agent.Execute(context.Background(), request(t, "list", protocol.SessionList, ListArguments{}))
-	if items := list.Data.([]SessionSummary); len(items) != 2 {
-		t.Fatalf("visible items=%d", len(items))
+	if items := list.Data.(SessionListResponse); len(items.Sessions) != 2 || items.Total != 2 || items.HasMore {
+		t.Fatalf("visible items=%+v", items)
 	}
 	all := agent.Execute(context.Background(), request(t, "all", protocol.SessionList, ListArguments{IncludeInternal: true}))
-	if items := all.Data.([]SessionSummary); len(items) != 3 {
-		t.Fatalf("all items=%d", len(items))
+	if items := all.Data.(SessionListResponse); len(items.Sessions) != 3 || items.Total != 3 {
+		t.Fatalf("all items=%+v", items)
+	}
+	paged := agent.Execute(context.Background(), request(t, "paged", protocol.SessionList, ListArguments{Limit: 1}))
+	if items := paged.Data.(SessionListResponse); len(items.Sessions) != 1 || !items.HasMore || items.NextCursor == nil || *items.NextCursor != 1 {
+		t.Fatalf("paged items=%+v", items)
 	}
 	timeline := agent.Execute(context.Background(), request(t, "timeline", protocol.SessionTimeline, TimelineArguments{SessionID: "s1", Limit: 1}))
 	data := timeline.Data.(SessionTimelineResponse)

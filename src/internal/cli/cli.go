@@ -26,7 +26,9 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/config"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	"github.com/LanceSandino/sessionsift/src/internal/ingest"
+	mcpserver "github.com/LanceSandino/sessionsift/src/internal/mcp"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
+	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
 
@@ -73,13 +75,15 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			return 2
 		}
 		return compare(ctx, paths, args[1], args[2], out, errOut)
+	case "mcp":
+		return serveMCP(ctx, paths, in, out, errOut)
 	case "doctor":
 		return doctor(ctx, paths, out, errOut)
 	case "hook":
 		return captureHook(paths, in, errOut)
 	case "setup":
 		if len(args) < 2 {
-			fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, or undo")
+			fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, mcp, or undo")
 			return 2
 		}
 		if args[1] == "enable" {
@@ -93,7 +97,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sessionsift <start|stop|status|import|import-chatgpt|sessions|inspect|compare|doctor|setup|hook|version>")
+	fmt.Fprintln(w, "usage: sessionsift <start|stop|status|import|import-chatgpt|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
 }
 
 func openStore(paths config.Paths) (*storage.Store, error) {
@@ -141,7 +145,19 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(errOut, err)
 	}
-	server := &http.Server{Handler: api.Handler(store), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	identity, identityErr := remote.LoadOrCreateIdentity(paths.DeviceIdentity)
+	if identityErr != nil {
+		return fail(errOut, identityErr)
+	}
+	remoteManager, remoteErr := remote.OpenManager(paths.RemoteState)
+	if remoteErr != nil {
+		return fail(errOut, remoteErr)
+	}
+	handler := api.HandlerWithRemote(store, remoteManager, identity)
+	if !loopbackListener(address) {
+		handler = localProxyOnly(handler)
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	stopCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if codexHome != "" {
@@ -156,7 +172,7 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	fmt.Fprintf(out, "SessionSift is running at http://%s\n", address)
+	fmt.Fprintf(out, "SessionSift is running at http://%s\n", localAddress(address))
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fail(errOut, err)
 	}
@@ -215,10 +231,43 @@ func listenAddress() string {
 		return fallback
 	}
 	host, _, err := net.SplitHostPort(value)
-	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+	if err != nil {
 		return fallback
 	}
-	return value
+	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		return value
+	}
+	if host == "0.0.0.0" && strings.EqualFold(strings.TrimSpace(os.Getenv("SESSIONSIFT_ALLOW_DOCKER_TUNNEL")), "true") {
+		return value
+	}
+	return fallback
+}
+
+func loopbackListener(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	return err == nil && (host == "localhost" || net.ParseIP(host).IsLoopback())
+}
+
+func localAddress(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err == nil && host == "0.0.0.0" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return address
+}
+
+// localProxyOnly permits Docker Desktop's loopback-forwarded tunnel traffic
+// without exposing session data to direct clients on the local network.
+func localProxyOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || !ip.IsLoopback() {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func watchCodex(ctx context.Context, store *storage.Store, codexHome string, errOut io.Writer) {
@@ -264,7 +313,7 @@ func status(out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "SessionSift is unhealthy")
 		return 1
 	}
-	fmt.Fprintf(out, "SessionSift is running at http://%s\n", listenAddress())
+	fmt.Fprintf(out, "SessionSift is running at http://%s\n", localAddress(listenAddress()))
 	return 0
 }
 
@@ -311,12 +360,20 @@ func list(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	}
 	defer store.Close()
 	agent := service.NewLocal(store)
-	response := agent.Execute(ctx, protocolRequest("cli-list", protocol.SessionList, service.ListArguments{}))
-	if response.Status != protocol.StatusOK {
-		return fail(errOut, protocolError(response))
-	}
-	for _, item := range response.Data.([]service.SessionSummary) {
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", item.ID, item.StartedAt.Format(time.RFC3339), item.Model, item.Title)
+	cursor := 0
+	for {
+		response := agent.Execute(ctx, protocolRequest("cli-list-"+strconv.Itoa(cursor), protocol.SessionList, service.ListArguments{Cursor: cursor, Limit: 100}))
+		if response.Status != protocol.StatusOK {
+			return fail(errOut, protocolError(response))
+		}
+		page := response.Data.(service.SessionListResponse)
+		for _, item := range page.Sessions {
+			fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", item.ID, item.StartedAt.Format(time.RFC3339), item.Model, item.Title)
+		}
+		if !page.HasMore || page.NextCursor == nil {
+			break
+		}
+		cursor = *page.NextCursor
 	}
 	return 0
 }
@@ -362,6 +419,18 @@ func protocolError(response protocol.Response) error {
 		return errors.New(response.Error.Message)
 	}
 	return errors.New("local agent operation failed")
+}
+
+func serveMCP(ctx context.Context, paths config.Paths, in io.Reader, out, errOut io.Writer) int {
+	store, err := openStore(paths)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	defer store.Close()
+	if err := mcpserver.New(service.NewLocal(store)).Serve(ctx, in, out); err != nil {
+		return fail(errOut, err)
+	}
+	return 0
 }
 
 func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
@@ -440,7 +509,7 @@ func captureHook(paths config.Paths, in io.Reader, errOut io.Writer) int {
 		return 0
 	}
 	client := http.Client{Timeout: 40 * time.Millisecond}
-	response, postErr := client.Post("http://"+listenAddress()+"/internal/hooks/codex", "application/json", bytes.NewReader(body))
+	response, postErr := client.Post("http://"+localAddress(listenAddress())+"/internal/hooks/codex", "application/json", bytes.NewReader(body))
 	if postErr == nil {
 		response.Body.Close()
 		if response.StatusCode < 300 {
@@ -465,10 +534,12 @@ func setup(kind string, out, errOut io.Writer) int {
 		fmt.Fprintln(out, otelSnippet)
 	case "chatgpt":
 		fmt.Fprintln(out, chatGPTSnippet)
+	case "mcp":
+		fmt.Fprintln(out, mcpSnippet)
 	case "undo":
 		fmt.Fprintln(out, "Remove only the SessionSift entries you added from ~/.codex/hooks.json and ~/.codex/config.toml. Delete ~/.sessionsift/chatgpt-export.path to stop watching a remembered ChatGPT export. SessionSift does not edit Codex configuration automatically.")
 	default:
-		fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, or undo")
+		fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, mcp, or undo")
 		return 2
 	}
 	return 0
@@ -525,6 +596,13 @@ const chatGPTSnippet = `Export ChatGPT data from Settings > Data Controls, then 
 SessionSift remembers that private local path and checks it for replacements while running.
 You can also set SESSIONSIFT_CHATGPT_EXPORT to override the remembered path.`
 
+const mcpSnippet = `Add SessionSift's read-only local MCP server to ~/.codex/config.toml:
+[mcp_servers.sessionsift]
+command = "sessionsift"
+args = ["mcp"]
+
+The stdio process exposes seven bounded, redacted tools and no shell, process, filesystem, or SQL primitive.`
+
 var listenTCP = net.Listen
 var signalPID = func(pid int) error {
 	process, err := os.FindProcess(pid)
@@ -535,7 +613,7 @@ var signalPID = func(pid int) error {
 }
 var getHealth = func() (*http.Response, error) {
 	client := http.Client{Timeout: 500 * time.Millisecond}
-	return client.Get("http://" + listenAddress() + "/healthz")
+	return client.Get("http://" + localAddress(listenAddress()) + "/healthz")
 }
 
 func write(out, errOut io.Writer, value any) int {

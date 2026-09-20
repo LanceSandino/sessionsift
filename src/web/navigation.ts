@@ -8,12 +8,16 @@ export function readRoute(pathname=window.location.pathname):Route{
   if(match)return{view:"sessions",sessionId:decodeURIComponent(match[1])};
   if(pathname==="/compare")return{view:"compare"};
   if(pathname==="/diagnostics")return{view:"diagnostics"};
+  if(pathname==="/remote-access")return{view:"remote"};
+  if(pathname==="/remote-review")return{view:"review"};
   return{view:"sessions"};
 }
 
 export function routePath(route:Route){
   if(route.view==="compare")return "/compare";
   if(route.view==="diagnostics")return "/diagnostics";
+  if(route.view==="remote")return "/remote-access";
+  if(route.view==="review")return "/remote-review";
   return route.sessionId?`/sessions/${encodeURIComponent(route.sessionId)}`:"/";
 }
 

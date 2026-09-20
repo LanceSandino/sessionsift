@@ -28,6 +28,10 @@ const (
 	TurnGet              Operation = "turn.get"
 	ConnectionStatus     Operation = "connection.status"
 	ConnectionDisconnect Operation = "connection.disconnect"
+	AnnotationList       Operation = "annotation.list"
+	AnnotationCreate     Operation = "annotation.create"
+	ReviewList           Operation = "review.list"
+	ReviewCreate         Operation = "review.create"
 )
 
 type Definition struct {
@@ -50,6 +54,10 @@ var definitions = map[Operation]Definition{
 	TurnGet:              definition(TurnGet, "turn.read", 2<<20, false),
 	ConnectionStatus:     definition(ConnectionStatus, "connection.read", 64<<10, false),
 	ConnectionDisconnect: definition(ConnectionDisconnect, "connection.manage", 64<<10, false),
+	AnnotationList:       definition(AnnotationList, "collaboration.read", 2<<20, true),
+	AnnotationCreate:     definition(AnnotationCreate, "collaboration.write", 64<<10, false),
+	ReviewList:           definition(ReviewList, "collaboration.read", 2<<20, true),
+	ReviewCreate:         definition(ReviewCreate, "collaboration.write", 64<<10, false),
 }
 
 func definition(operation Operation, capability Capability, maximum int, paginated bool) Definition {

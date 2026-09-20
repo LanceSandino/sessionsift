@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,10 @@ func TestVersionSetupAndUsage(t *testing.T) {
 	out.Reset()
 	if code := Run(context.Background(), []string{"setup", "chatgpt"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "import-chatgpt") {
 		t.Fatalf("chatgpt setup code=%d out=%s", code, out.String())
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"setup", "mcp"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "mcp_servers.sessionsift") {
+		t.Fatalf("mcp setup code=%d out=%s", code, out.String())
 	}
 	out.Reset()
 	if code := Run(context.Background(), []string{"setup", "hooks"}, strings.NewReader(""), &out, &errOut); code != 0 {
@@ -74,6 +79,38 @@ func TestListenAddressRemainsLocalhostOnly(t *testing.T) {
 	t.Setenv("SESSIONSIFT_ADDR", "0.0.0.0:7788")
 	if listenAddress() != "127.0.0.1:7777" {
 		t.Fatal("non-loopback address was accepted")
+	}
+	t.Setenv("SESSIONSIFT_ALLOW_DOCKER_TUNNEL", "true")
+	if listenAddress() != "0.0.0.0:7788" {
+		t.Fatal("explicit Docker tunnel listener was rejected")
+	}
+	if localAddress(listenAddress()) != "127.0.0.1:7788" {
+		t.Fatal("wildcard listener was not converted to a loopback client address")
+	}
+}
+
+func TestDockerTunnelListenerRejectsNonLocalNetworkClients(t *testing.T) {
+	called := false
+	handler := localProxyOnly(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	local := httptest.NewRecorder()
+	localRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	localRequest.RemoteAddr = "127.0.0.1:41234"
+	handler.ServeHTTP(local, localRequest)
+	if local.Code != http.StatusNoContent || !called {
+		t.Fatalf("local status=%d called=%v", local.Code, called)
+	}
+
+	called = false
+	remote := httptest.NewRecorder()
+	remoteRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	remoteRequest.RemoteAddr = "192.168.4.20:41234"
+	handler.ServeHTTP(remote, remoteRequest)
+	if remote.Code != http.StatusForbidden || called {
+		t.Fatalf("remote status=%d called=%v", remote.Code, called)
 	}
 }
 
@@ -173,6 +210,18 @@ func TestInvalidCommands(t *testing.T) {
 		if code := Run(context.Background(), args, strings.NewReader(""), &out, &errOut); code != 2 {
 			t.Fatalf("args=%v code=%d", args, code)
 		}
+	}
+}
+
+func TestMCPCommandListsOnlySafeSessionTools(t *testing.T) {
+	t.Setenv("SESSIONSIFT_HOME", t.TempDir())
+	input := strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n")
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"mcp"}, input, &out, &errOut); code != 0 {
+		t.Fatalf("code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), `"list_sessions"`) || strings.Contains(out.String(), "shell") || strings.Contains(out.String(), "filesystem") {
+		t.Fatalf("unsafe or incomplete MCP tools: %s", out.String())
 	}
 }
 

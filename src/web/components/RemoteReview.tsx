@@ -1,0 +1,17 @@
+/** @module RemoteReview @description Lets an approved reviewer inspect sessions through a scoped grant. */
+import React,{useState} from "react";
+import {api} from "../api";
+import type {Session} from "../types";
+import {Transcript} from "./Transcript";
+import {Timeline} from "./Timeline";
+import {ToolUsage} from "./ToolUsage";
+
+type SessionPage={sessions:Session[];total:number;returned:number;offset:number;has_more:boolean;next_cursor?:number};
+
+export function RemoteReview(){
+  const[code,setCode]=useState("");const[name,setName]=useState("");const[token,setToken]=useState("");const[sessions,setSessions]=useState<Session[]>([]);const[selected,setSelected]=useState<Session>();const[message,setMessage]=useState("");const[error,setError]=useState("");
+  const claim=()=>api.claimPairing(code,name).then(()=>{setMessage("Request sent. The workstation owner must approve it and share the one-time grant token.");setError("")}).catch(value=>setError(String(value)));
+  const load=async()=>{try{let cursor=0;const all:Session[]=[];do{const response=await api.remoteProtocol<SessionPage>(token,"session.list",{cursor,limit:100});all.push(...response.data.sessions);if(!response.data.has_more)break;cursor=response.data.next_cursor||0}while(true);setSessions(all);setSelected(undefined);setError("")}catch(value){setError(String(value))}};
+  const inspect=(summary:Session)=>api.remoteProtocol<Session>(token,"session.get",{session_id:summary.id}).then(response=>setSelected(response.data)).catch(value=>setError(String(value)));
+  return <main className="remoteView"><header><span className="eyebrow">SCOPED REVIEWER PORTAL</span><h1>Review a SessionSift workspace</h1><p>The workstation stays private. Only capabilities approved by its owner are available.</p></header>{error&&<div className="warningBanner">{error}</div>}<div className="remoteGrid"><section className="card remoteForm"><div className="sectionTitle"><h3>1. Request access</h3><span className="pill">owner approval</span></div><label>Pairing code<input value={code} onChange={event=>setCode(event.target.value)} placeholder="123-456"/></label><label>Reviewer name<input value={name} onChange={event=>setName(event.target.value)} placeholder="Your name"/></label><button className="primaryButton" onClick={claim}>Send request</button>{message&&<p>{message}</p>}</section><section className="card remoteForm"><div className="sectionTitle"><h3>2. Use approved grant</h3><span className="pill">memory only</span></div><label>Scoped token<input type="password" value={token} onChange={event=>setToken(event.target.value)} placeholder="Paste the one-time token"/></label><button className="primaryButton" onClick={load}>Load approved sessions</button></section></div><section className="card reviewerSessions"><div className="sectionTitle"><h3>Available sessions</h3><span className="pill">{sessions.length}</span></div>{sessions.map(session=><button key={session.id} onClick={()=>inspect(session)}><b>{session.title}</b><small>{new Date(session.started_at).toLocaleString()} · {session.source||"codex"}</small></button>)}{!sessions.length&&<p className="empty">No approved session data loaded.</p>}</section>{selected&&<section className="reviewerDetail"><header><h2>{selected.title}</h2><p>{new Date(selected.started_at).toLocaleString()} · {selected.runtime_location||"local"} · {selected.surface||"unknown surface"}</p></header><Transcript session={selected}/><div className="inspectorGrid"><Timeline session={selected} onTurn={()=>{}}/><ToolUsage session={selected}/></div></section>}</main>
+}

@@ -45,6 +45,8 @@ func NewLocal(repository Repository) *Service { return New(repository, LocalAuth
 
 type ListArguments struct {
 	IncludeInternal bool `json:"include_internal"`
+	Cursor          int  `json:"cursor,omitempty"`
+	Limit           int  `json:"limit,omitempty"`
 }
 
 type SessionArguments struct {
@@ -69,6 +71,15 @@ type TurnArguments struct {
 type SessionSummary struct {
 	domain.Session
 	Metrics domain.Metrics `json:"metrics"`
+}
+
+type SessionListResponse struct {
+	Sessions   []SessionSummary `json:"sessions"`
+	Total      int              `json:"total"`
+	Returned   int              `json:"returned"`
+	Offset     int              `json:"offset"`
+	HasMore    bool             `json:"has_more"`
+	NextCursor *int             `json:"next_cursor,omitempty"`
 }
 
 type SessionTimelineResponse struct {
@@ -133,7 +144,10 @@ func (s *Service) execute(ctx context.Context, request protocol.Request) (any, p
 		if err := decode(request.Arguments, &arguments); err != nil {
 			return nil, protocol.StatusInvalidRequest, err
 		}
-		return s.list(ctx, arguments.IncludeInternal)
+		if arguments.Cursor < 0 || arguments.Limit < 0 {
+			return nil, protocol.StatusInvalidRequest, errors.New("cursor and limit must be non-negative")
+		}
+		return s.list(ctx, arguments)
 	case protocol.SessionGet:
 		var arguments SessionArguments
 		if err := decodeRequired(request.Arguments, &arguments, func() bool { return arguments.SessionID != "" }); err != nil {
@@ -187,21 +201,41 @@ func (s *Service) execute(ctx context.Context, request protocol.Request) (any, p
 	}
 }
 
-func (s *Service) list(ctx context.Context, includeInternal bool) (any, protocol.Status, error) {
+func (s *Service) list(ctx context.Context, arguments ListArguments) (any, protocol.Status, error) {
 	sessions, err := s.repository.ListSessions(ctx)
 	if err != nil {
 		return nil, protocol.StatusError, err
 	}
 	items := make([]SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
-		if session.Kind == domain.InternalReviewSession && !includeInternal {
+		if session.Kind == domain.InternalReviewSession && !arguments.IncludeInternal {
 			continue
 		}
 		metrics := domain.CalculateMetrics(session)
 		session.CWD, session.Turns, session.Events, session.ToolCalls, session.Findings = "", nil, nil, nil, nil
 		items = append(items, SessionSummary{Session: session, Metrics: metrics})
 	}
-	return items, protocol.StatusOK, nil
+	limit := arguments.Limit
+	if limit == 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := arguments.Cursor
+	if offset > len(items) {
+		offset = len(items)
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	response := SessionListResponse{Sessions: items[offset:end], Total: len(items), Returned: end - offset, Offset: offset, HasMore: end < len(items)}
+	if response.HasMore {
+		next := end
+		response.NextCursor = &next
+	}
+	return response, protocol.StatusOK, nil
 }
 
 func (s *Service) session(ctx context.Context, id string) (domain.Session, protocol.Status, error) {
