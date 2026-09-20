@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/LanceSandino/sessionsift/src/internal/config"
 )
 
 func TestVersionSetupAndUsage(t *testing.T) {
@@ -20,8 +22,12 @@ func TestVersionSetupAndUsage(t *testing.T) {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 	out.Reset()
-	if code := Run(context.Background(), []string{"setup", "otel"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "127.0.0.1:7777/v1/logs") {
+	if code := Run(context.Background(), []string{"setup", "otel"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "127.0.0.1:7777/v1/logs") || !strings.Contains(out.String(), "127.0.0.1:7777/v1/metrics") {
 		t.Fatalf("setup code=%d out=%s", code, out.String())
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"setup", "chatgpt"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "import-chatgpt") {
+		t.Fatalf("chatgpt setup code=%d out=%s", code, out.String())
 	}
 	out.Reset()
 	if code := Run(context.Background(), []string{"setup", "hooks"}, strings.NewReader(""), &out, &errOut); code != 0 {
@@ -37,6 +43,29 @@ func TestVersionSetupAndUsage(t *testing.T) {
 	}
 }
 
+func TestSetupEnableInstallsCurrentBinary(t *testing.T) {
+	codex := t.TempDir()
+	t.Setenv("CODEX_HOME", codex)
+	t.Setenv("SESSIONSIFT_HOME", t.TempDir())
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"setup", "enable"}, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	configBody, configErr := os.ReadFile(filepath.Join(codex, "config.toml"))
+	hooksBody, hooksErr := os.ReadFile(filepath.Join(codex, "hooks.json"))
+	if configErr != nil || hooksErr != nil || !strings.Contains(string(configBody), "/v1/metrics") || !strings.Contains(string(hooksBody), " hook") {
+		t.Fatalf("config=%s hooks=%s errors=%v,%v", configBody, hooksBody, configErr, hooksErr)
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"setup", "enable"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "already enabled") {
+		t.Fatalf("second code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"doctor"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "OTel logs       configured\t✓") || !strings.Contains(out.String(), "OTel metrics    configured\t✓") {
+		t.Fatalf("doctor code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+}
+
 func TestListenAddressRemainsLocalhostOnly(t *testing.T) {
 	t.Setenv("SESSIONSIFT_ADDR", "127.0.0.1:7788")
 	if listenAddress() != "127.0.0.1:7788" {
@@ -45,6 +74,34 @@ func TestListenAddressRemainsLocalhostOnly(t *testing.T) {
 	t.Setenv("SESSIONSIFT_ADDR", "0.0.0.0:7788")
 	if listenAddress() != "127.0.0.1:7777" {
 		t.Fatal("non-loopback address was accepted")
+	}
+}
+
+func TestChatGPTSourceHelpers(t *testing.T) {
+	state := t.TempDir()
+	paths := config.Paths{ChatGPTExport: filepath.Join(state, "chatgpt-export.path")}
+	if chatGPTExportPath(paths) != "" || fileIdentity(filepath.Join(state, "missing")) != "" {
+		t.Fatal("missing paths should be empty")
+	}
+	if err := os.WriteFile(paths.ChatGPTExport, []byte("\n"), 0o600); err != nil || chatGPTExportPath(paths) != "" {
+		t.Fatal("empty remembered path should be ignored")
+	}
+	export := filepath.Join(state, "export.json")
+	if err := os.WriteFile(export, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fileIdentity(export) == "" {
+		t.Fatal("existing export should have an identity")
+	}
+	if err := os.WriteFile(paths.ChatGPTExport, []byte(export+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if chatGPTExportPath(paths) != export {
+		t.Fatal("remembered export path not loaded")
+	}
+	t.Setenv("SESSIONSIFT_CHATGPT_EXPORT", filepath.Join(state, "override.json"))
+	if !strings.HasSuffix(chatGPTExportPath(paths), "override.json") {
+		t.Fatal("environment override not applied")
 	}
 }
 
@@ -89,6 +146,27 @@ func TestImportListInspectCompareDoctorAndSetup(t *testing.T) {
 	}
 }
 
+func TestImportChatGPTCommand(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	t.Setenv("SESSIONSIFT_HOME", state)
+	path := filepath.Join(t.TempDir(), "conversations.json")
+	data := `[{"id":"chat","title":"Imported chat","create_time":1,"current_node":"u","mapping":{"u":{"message":{"id":"u","author":{"role":"user"},"create_time":1,"content":{"parts":["Hello"]}}}}}]`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"import-chatgpt", path}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), `"imported": 1`) {
+		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	remembered, err := os.ReadFile(filepath.Join(state, "chatgpt-export.path"))
+	if err != nil || strings.TrimSpace(string(remembered)) != path {
+		t.Fatalf("remembered=%q err=%v", remembered, err)
+	}
+	if code := Run(context.Background(), []string{"import-chatgpt"}, strings.NewReader(""), &out, &errOut); code != 2 {
+		t.Fatalf("missing path code=%d", code)
+	}
+}
+
 func TestInvalidCommands(t *testing.T) {
 	var out, errOut bytes.Buffer
 	for _, args := range [][]string{{"inspect"}, {"compare", "a"}, {"setup"}, {"setup", "bad"}, {"unknown"}} {
@@ -101,8 +179,13 @@ func TestInvalidCommands(t *testing.T) {
 func TestStartStatusAndStopErrors(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state")
 	codex := filepath.Join(t.TempDir(), "codex")
+	chatExport := filepath.Join(t.TempDir(), "conversations.json")
+	if err := os.WriteFile(chatExport, []byte(`[{"id":"start-chat","title":"Startup chat"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("SESSIONSIFT_HOME", state)
 	t.Setenv("CODEX_HOME", codex)
+	t.Setenv("SESSIONSIFT_CHATGPT_EXPORT", chatExport)
 	var out, errOut bytes.Buffer
 	oldListen := listenTCP
 	listenTCP = func(string, string) (net.Listener, error) { return nil, errors.New("bind failed") }

@@ -36,6 +36,8 @@ func Handler(store *storage.Store) http.Handler {
 			receiveHook(store, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/logs":
 			receiveOTel(store, w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/metrics":
+			receiveOTelMetrics(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		case r.Method == http.MethodGet:
@@ -49,6 +51,20 @@ func Handler(store *storage.Store) http.Handler {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
 	})
+}
+
+func receiveOTelMetrics(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "OTLP batch is too large"})
+		return
+	}
+	count, err := otel.DecodeMetrics(r.Header.Get("Content-Type"), body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid OTLP metrics batch"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]int{"accepted": count})
 }
 
 func receiveOTel(store *storage.Store, w http.ResponseWriter, r *http.Request) {

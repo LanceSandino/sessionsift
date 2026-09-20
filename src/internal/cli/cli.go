@@ -21,6 +21,7 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/api"
 	"github.com/LanceSandino/sessionsift/src/internal/app"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/discover"
+	"github.com/LanceSandino/sessionsift/src/internal/codexconfig"
 	"github.com/LanceSandino/sessionsift/src/internal/config"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	"github.com/LanceSandino/sessionsift/src/internal/ingest"
@@ -50,6 +51,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return status(out, errOut)
 	case "import":
 		return importSessions(ctx, paths, out, errOut)
+	case "import-chatgpt":
+		if len(args) < 2 {
+			fmt.Fprintln(errOut, "ChatGPT export path required")
+			return 2
+		}
+		return importChatGPT(ctx, paths, args[1], out, errOut)
 	case "sessions":
 		return list(ctx, paths, out, errOut)
 	case "inspect":
@@ -70,8 +77,11 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return captureHook(paths, in, errOut)
 	case "setup":
 		if len(args) < 2 {
-			fmt.Fprintln(errOut, "setup requires hooks, otel, or undo")
+			fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, or undo")
 			return 2
+		}
+		if args[1] == "enable" {
+			return enableSetup(out, errOut)
 		}
 		return setup(args[1], out, errOut)
 	default:
@@ -81,7 +91,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sessionsift <start|stop|status|import|sessions|inspect|compare|doctor|setup|hook|version>")
+	fmt.Fprintln(w, "usage: sessionsift <start|stop|status|import|import-chatgpt|sessions|inspect|compare|doctor|setup|hook|version>")
 }
 
 func openStore(paths config.Paths) (*storage.Store, error) {
@@ -111,6 +121,15 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 			fmt.Fprintf(out, "Imported %d of %d discovered sessions (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
 		}
 	}
+	chatGPTExport := chatGPTExportPath(paths)
+	if chatGPTExport != "" {
+		result, importErr := ingest.ImportChatGPT(ctx, store, chatGPTExport)
+		if importErr != nil {
+			fmt.Fprintf(errOut, "ChatGPT import warning: %v\n", importErr)
+		} else {
+			fmt.Fprintf(out, "Imported %d of %d ChatGPT conversations (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
+		}
+	}
 	if err := os.WriteFile(paths.PID, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		return fail(errOut, err)
 	}
@@ -126,6 +145,9 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	if codexHome != "" {
 		go watchCodex(stopCtx, store, codexHome, errOut)
 	}
+	if chatGPTExport != "" {
+		go watchChatGPT(stopCtx, store, chatGPTExport, errOut)
+	}
 	go func() {
 		<-stopCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -137,6 +159,51 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	return 0
+}
+
+func watchChatGPT(ctx context.Context, store *storage.Store, path string, errOut io.Writer) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	last := fileIdentity(path)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			current := fileIdentity(path)
+			if current == "" || current == last {
+				continue
+			}
+			if _, err := ingest.ImportChatGPT(ctx, store, path); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(errOut, "ChatGPT import warning: %v\n", err)
+				continue
+			}
+			last = current
+		}
+	}
+}
+
+func fileIdentity(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+func chatGPTExportPath(paths config.Paths) string {
+	if configured := strings.TrimSpace(os.Getenv("SESSIONSIFT_CHATGPT_EXPORT")); configured != "" {
+		return filepath.Clean(configured)
+	}
+	value, err := os.ReadFile(paths.ChatGPTExport)
+	if err != nil {
+		return ""
+	}
+	stored := strings.TrimSpace(string(value))
+	if stored == "" {
+		return ""
+	}
+	return filepath.Clean(stored)
 }
 
 func listenAddress() string {
@@ -215,6 +282,26 @@ func importSessions(ctx context.Context, paths config.Paths, out, errOut io.Writ
 	}
 	return write(out, errOut, result)
 }
+
+func importChatGPT(ctx context.Context, paths config.Paths, path string, out, errOut io.Writer) int {
+	store, err := openStore(paths)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	defer store.Close()
+	result, err := ingest.ImportChatGPT(ctx, store, path)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	absolute, absoluteErr := filepath.Abs(path)
+	if absoluteErr != nil {
+		return fail(errOut, absoluteErr)
+	}
+	if err := os.WriteFile(paths.ChatGPTExport, []byte(filepath.Clean(absolute)+"\n"), 0o600); err != nil {
+		return fail(errOut, err)
+	}
+	return write(out, errOut, result)
+}
 func list(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	store, err := openStore(paths)
 	if err != nil {
@@ -283,12 +370,16 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 	hooksBody, _ := os.ReadFile(filepath.Join(home, "hooks.json"))
 	configText := string(configBody) + string(hooksBody)
 	hooks := "not configured\t!"
-	if strings.Contains(configText, "sessionsift hook") {
+	if strings.Contains(configText, "\"command\"") && strings.Contains(configText, " hook") {
 		hooks = "configured\t✓"
 	}
-	otel := "not configured (optional)\t!"
+	otelLogs := "not configured (optional)\t!"
 	if strings.Contains(string(configBody), "/v1/logs") && strings.Contains(string(configBody), "otel") {
-		otel = "configured\t✓"
+		otelLogs = "configured\t✓"
+	}
+	otelMetrics := "not configured (optional)\t!"
+	if strings.Contains(string(configBody), "/v1/metrics") && strings.Contains(string(configBody), "metrics_exporter") {
+		otelMetrics = "configured\t✓"
 	}
 	history := "not found\t!"
 	if _, statErr := os.Stat(filepath.Join(home, "history.jsonl")); statErr == nil {
@@ -303,16 +394,28 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 	}
 	database := "not initialized\t!"
 	warnings := 0
+	chatCount := 0
 	if store, openErr := openStore(paths); openErr == nil {
 		database = paths.Database + "\t✓"
 		if sessions, listErr := store.ListSessions(ctx); listErr == nil {
 			for _, session := range sessions {
 				warnings += len(session.Warnings)
+				if session.Source == domain.SourceChatGPT {
+					chatCount++
+				}
 			}
 		}
 		store.Close()
 	}
-	fmt.Fprintf(out, "Codex home       %s\t✓\nSessions         %d found\t✓\nArchived         %d found\t✓\nHistory          %s\nHook capture     %s\nOTel             %s\nCollector        %s\nDatabase         %s\nParser warnings  %d\n", home, current, archived, history, hooks, otel, collector, database, warnings)
+	chatSource := "not configured\t!"
+	if path := chatGPTExportPath(paths); path != "" {
+		if _, statErr := os.Stat(path); statErr == nil {
+			chatSource = "watching " + filepath.Base(path) + "\t✓"
+		} else {
+			chatSource = "configured path missing\t!"
+		}
+	}
+	fmt.Fprintf(out, "Codex home       %s\t✓\nSessions         %d found\t✓\nArchived         %d found\t✓\nChatGPT source   %s\nChatGPT chats    %d imported\nHistory          %s\nHook capture     %s\nOTel logs       %s\nOTel metrics    %s\nCollector        %s\nDatabase         %s\nParser warnings  %d\n", home, current, archived, chatSource, chatCount, history, hooks, otelLogs, otelMetrics, collector, database, warnings)
 	return 0
 }
 
@@ -345,12 +448,39 @@ func setup(kind string, out, errOut io.Writer) int {
 		fmt.Fprintln(out, hookSnippet)
 	case "otel":
 		fmt.Fprintln(out, otelSnippet)
+	case "chatgpt":
+		fmt.Fprintln(out, chatGPTSnippet)
 	case "undo":
-		fmt.Fprintln(out, "Remove only the SessionSift entries you added from ~/.codex/hooks.json and ~/.codex/config.toml. SessionSift does not edit these files automatically.")
+		fmt.Fprintln(out, "Remove only the SessionSift entries you added from ~/.codex/hooks.json and ~/.codex/config.toml. Delete ~/.sessionsift/chatgpt-export.path to stop watching a remembered ChatGPT export. SessionSift does not edit Codex configuration automatically.")
 	default:
-		fmt.Fprintln(errOut, "setup requires hooks, otel, or undo")
+		fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, or undo")
 		return 2
 	}
+	return 0
+}
+
+func enableSetup(out, errOut io.Writer) int {
+	home, err := discover.Home()
+	if err != nil {
+		return fail(errOut, err)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return fail(errOut, err)
+	}
+	binary, err = filepath.Abs(binary)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	result, err := codexconfig.Enable(home, binary)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	if !result.HooksChanged && !result.OTelChanged {
+		fmt.Fprintln(out, "SessionSift hooks and telemetry are already enabled.")
+		return 0
+	}
+	fmt.Fprintf(out, "Enabled SessionSift Codex integration in %s. Review and trust the new hooks with /hooks before they can run.\n", home)
 	return 0
 }
 
@@ -371,7 +501,14 @@ Codex requires you to review and trust unmanaged hooks before they run.`
 const otelSnippet = `[otel]
 environment = "local"
 log_user_prompt = false
-exporter = { otlp-http = { endpoint = "http://127.0.0.1:7777/v1/logs", protocol = "binary" } }`
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:7777/v1/logs", protocol = "binary" } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:7777/v1/metrics", protocol = "binary" } }`
+
+const chatGPTSnippet = `Export ChatGPT data from Settings > Data Controls, then run:
+  sessionsift import-chatgpt /path/to/chatgpt-export.zip
+
+SessionSift remembers that private local path and checks it for replacements while running.
+You can also set SESSIONSIFT_CHATGPT_EXPORT to override the remembered path.`
 
 var listenTCP = net.Listen
 var signalPID = func(pid int) error {

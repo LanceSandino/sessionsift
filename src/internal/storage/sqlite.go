@@ -44,6 +44,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS tool_calls (id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, timestamp TEXT, tool_name TEXT, tool_category TEXT, success INTEGER, payload_json TEXT NOT NULL, PRIMARY KEY(session_id,id))`,
 		`CREATE TABLE IF NOT EXISTS findings (id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, finding_type TEXT, severity TEXT, confidence TEXT, payload_json TEXT NOT NULL, PRIMARY KEY(session_id,id))`,
 		`CREATE TABLE IF NOT EXISTS imports (path_hash TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, session_id TEXT NOT NULL, imported_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS chatgpt_sources (source_hash TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, PRIMARY KEY(source_hash,session_id))`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id,timestamp)`,
 		`CREATE INDEX IF NOT EXISTS idx_tools_session_time ON tool_calls(session_id,timestamp)`,
@@ -55,6 +56,58 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// ReconcileChatGPTSource records the current export membership and removes chats no longer present.
+func (s *Store) ReconcileChatGPTSource(ctx context.Context, sourceHash string, sessionIDs []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		seen[sessionID] = struct{}{}
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO chatgpt_sources(source_hash,session_id) VALUES(?,?)`, sourceHash, sessionID); err != nil {
+			return err
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT session_id FROM chatgpt_sources WHERE source_hash=?`, sourceHash)
+	if err != nil {
+		return err
+	}
+	var removed []string
+	for rows.Next() {
+		var sessionID string
+		if err = rows.Scan(&sessionID); err != nil {
+			rows.Close()
+			return err
+		}
+		if _, ok := seen[sessionID]; !ok {
+			removed = append(removed, sessionID)
+		}
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, sessionID := range removed {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM chatgpt_sources WHERE source_hash=? AND session_id=?`, sourceHash, sessionID); err != nil {
+			return err
+		}
+		var references int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM chatgpt_sources WHERE session_id=?`, sessionID).Scan(&references); err != nil {
+			return err
+		}
+		if references == 0 {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM imports WHERE session_id=?`, sessionID); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, sessionID); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 // ImportNeeded checks the stored fingerprint for an input path identity.
@@ -173,7 +226,7 @@ func (s *Store) AppendHookEvent(ctx context.Context, event domain.Event) error {
 	var existing string
 	err = tx.QueryRowContext(ctx, `SELECT payload_json FROM sessions WHERE id=?`, event.SessionID).Scan(&existing)
 	if errors.Is(err, sql.ErrNoRows) {
-		session = domain.Session{ID: event.SessionID, ExternalSessionID: event.SessionID, Title: "Live Codex session", Kind: domain.DeveloperSession, StartedAt: event.Timestamp, EndedAt: event.Timestamp, Status: "live", ParserVersion: domain.ParserVersion}
+		session = domain.Session{ID: event.SessionID, ExternalSessionID: event.SessionID, Title: "Live Codex session", Kind: domain.DeveloperSession, Source: domain.SourceCodex, StartedAt: event.Timestamp, EndedAt: event.Timestamp, Status: "live", ParserVersion: domain.ParserVersion}
 	} else if err != nil {
 		return err
 	} else if err = json.Unmarshal([]byte(existing), &session); err != nil {

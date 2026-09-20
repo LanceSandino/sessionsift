@@ -107,7 +107,7 @@ func TestBadRoutesAndOTelAcceptance(t *testing.T) {
 		method, path string
 		status       int
 		body         string
-	}{{http.MethodGet, "/api/v1/compare?a=missing&b=s1", 400, ""}, {http.MethodGet, "/api/v1/sessions/s1/nope", 404, ""}, {http.MethodPost, "/internal/hooks/codex", 400, "not-json"}, {http.MethodPost, "/v1/logs", 202, ""}, {http.MethodDelete, "/nope", 404, ""}}
+	}{{http.MethodGet, "/api/v1/compare?a=missing&b=s1", 400, ""}, {http.MethodGet, "/api/v1/sessions/s1/nope", 404, ""}, {http.MethodPost, "/internal/hooks/codex", 400, "not-json"}, {http.MethodPost, "/v1/logs", 202, ""}, {http.MethodPost, "/v1/metrics", 202, ""}, {http.MethodDelete, "/nope", 404, ""}}
 	for _, item := range cases {
 		req := httptest.NewRequest(item.method, item.path, strings.NewReader(item.body))
 		res := httptest.NewRecorder()

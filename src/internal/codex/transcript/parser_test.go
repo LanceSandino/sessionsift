@@ -69,6 +69,53 @@ func TestParserNormalizesOutputsCompactionAndUsageRecord(t *testing.T) {
 	}
 }
 
+func TestParserExpandsOrchestratedToolsAndMCPServers(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"nested","cwd":"/tmp/repo"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"root_turn_id":"turn"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call","name":"exec","input":"const [a,b] = await Promise.all([tools.exec_command({cmd: 'pwd'}), tools.mcp__cua_repl__js({code: 'ok'})]);"}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call","output":"{\"isError\":true}"}}`,
+	}, "\n")
+	session, err := New().Parse(strings.NewReader(input), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(session.ToolCalls) != 2 || len(session.Events) != 2 {
+		t.Fatalf("expected two expanded tool calls: %+v", session.ToolCalls)
+	}
+	if session.ToolCalls[0].ToolName != "exec_command" || session.ToolCalls[0].ToolTransport != "builtin" {
+		t.Fatalf("unexpected built-in tool: %+v", session.ToolCalls[0])
+	}
+	if session.ToolCalls[1].ToolName != "mcp__cua_repl__js" || session.ToolCalls[1].ToolTransport != "mcp" || session.ToolCalls[1].ToolServer != "cua_repl" {
+		t.Fatalf("unexpected MCP tool: %+v", session.ToolCalls[1])
+	}
+	if session.ToolCalls[0].Success || session.ToolCalls[1].Success {
+		t.Fatalf("wrapper result was not applied to expanded tools: %+v", session.ToolCalls)
+	}
+}
+
+func TestParserPreservesInitialPromptAndClassifiesSameTurnFollowup(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"steering","cwd":"/tmp/repo","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"turn_id":"turn"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Build the feature"}]}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Also push it when done"}]}}`,
+	}, "\n")
+	session, err := New().Parse(strings.NewReader(input), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Turns[0].UserPromptRedacted != "Build the feature" {
+		t.Fatalf("initial prompt was overwritten: %+v", session.Turns[0])
+	}
+	if session.Originator != "Codex Desktop" || session.Surface != "vscode" || session.ThreadSource != "user" {
+		t.Fatalf("session context missing: %+v", session)
+	}
+	if len(session.Events) != 2 || session.Events[1].EventSubtype != "steering_or_queued" || session.Events[1].PayloadRedacted["text"] != "Also push it when done" {
+		t.Fatalf("follow-up event=%+v", session.Events)
+	}
+}
+
 func TestParserHelpers(t *testing.T) {
 	cases := map[string]string{"apply_patch": "edit", "read_file": "read", "rg auth": "search", "npm test": "validation", "web http": "network", "unknown": "execute"}
 	for input, want := range cases {
@@ -105,6 +152,9 @@ func TestParserHelpers(t *testing.T) {
 	}
 	if got := cleanUserContent("## My request:\ndelete these\n<image>binary placeholder</image>"); got != "delete these" {
 		t.Fatalf("image wrapper not removed: %q", got)
+	}
+	if got := nestedToolNames("no nested calls"); len(got) != 0 {
+		t.Fatalf("unexpected nested tools: %v", got)
 	}
 }
 

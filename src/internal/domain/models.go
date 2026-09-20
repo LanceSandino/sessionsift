@@ -3,14 +3,25 @@ package domain
 
 import "time"
 
-const ParserVersion = "codex-jsonl-v5"
+const ParserVersion = "codex-jsonl-v8"
 
-// SessionKind distinguishes developer work from Codex-owned supporting agents.
+const ChatGPTExportVersion = "chatgpt-export-v1"
+
+// SessionSource identifies the product that produced a normalized session.
+type SessionSource string
+
+const (
+	SourceCodex   SessionSource = "codex"
+	SourceChatGPT SessionSource = "chatgpt"
+)
+
+// SessionKind distinguishes developer work, chats, and product-owned supporting agents.
 type SessionKind string
 
 const (
 	DeveloperSession      SessionKind = "developer"
 	InternalReviewSession SessionKind = "internal_review"
+	ChatSession           SessionKind = "chat"
 )
 
 // Confidence makes the provenance of a finding explicit in the API and UI.
@@ -22,32 +33,41 @@ const (
 	Possible Confidence = "possible"
 )
 
-// Session is a normalized Codex session and its related records.
+// Session is a normalized conversation and its related records.
 type Session struct {
-	ID                string      `json:"id"`
-	ExternalSessionID string      `json:"external_session_id"`
-	Title             string      `json:"title"`
-	Kind              SessionKind `json:"session_kind"`
-	CWD               string      `json:"-"`
-	RepoRootHash      string      `json:"repo_root_hash"`
-	RepoDisplayName   string      `json:"repo_display_name"`
-	GitBranch         string      `json:"git_branch,omitempty"`
-	Model             string      `json:"model,omitempty"`
-	ReasoningEffort   string      `json:"reasoning_effort,omitempty"`
-	StartedAt         time.Time   `json:"started_at"`
-	EndedAt           time.Time   `json:"ended_at"`
-	Status            string      `json:"status"`
-	SourceVersion     string      `json:"source_version,omitempty"`
-	ParserVersion     string      `json:"parser_version"`
-	Archived          bool        `json:"archived"`
-	Warnings          []string    `json:"warnings,omitempty"`
-	Turns             []Turn      `json:"turns,omitempty"`
-	Events            []Event     `json:"events,omitempty"`
-	ToolCalls         []ToolCall  `json:"tool_calls,omitempty"`
-	Findings          []Finding   `json:"findings,omitempty"`
+	ID                string        `json:"id"`
+	ExternalSessionID string        `json:"external_session_id"`
+	Title             string        `json:"title"`
+	TitleSource       string        `json:"title_source,omitempty"`
+	Kind              SessionKind   `json:"session_kind"`
+	Source            SessionSource `json:"source"`
+	Originator        string        `json:"originator,omitempty"`
+	Surface           string        `json:"surface,omitempty"`
+	ThreadSource      string        `json:"thread_source,omitempty"`
+	RuntimeLocation   string        `json:"runtime_location,omitempty"`
+	ApprovalMode      string        `json:"approval_mode,omitempty"`
+	SandboxPolicy     string        `json:"sandbox_policy,omitempty"`
+	NetworkAccess     string        `json:"network_access,omitempty"`
+	CWD               string        `json:"-"`
+	RepoRootHash      string        `json:"repo_root_hash"`
+	RepoDisplayName   string        `json:"repo_display_name"`
+	GitBranch         string        `json:"git_branch,omitempty"`
+	Model             string        `json:"model,omitempty"`
+	ReasoningEffort   string        `json:"reasoning_effort,omitempty"`
+	StartedAt         time.Time     `json:"started_at"`
+	EndedAt           time.Time     `json:"ended_at"`
+	Status            string        `json:"status"`
+	SourceVersion     string        `json:"source_version,omitempty"`
+	ParserVersion     string        `json:"parser_version"`
+	Archived          bool          `json:"archived"`
+	Warnings          []string      `json:"warnings,omitempty"`
+	Turns             []Turn        `json:"turns,omitempty"`
+	Events            []Event       `json:"events,omitempty"`
+	ToolCalls         []ToolCall    `json:"tool_calls,omitempty"`
+	Findings          []Finding     `json:"findings,omitempty"`
 }
 
-// Turn contains prompt and token data for one user-driven Codex turn.
+// Turn contains prompt and token data for one user-driven turn.
 type Turn struct {
 	ID                       string    `json:"id"`
 	SessionID                string    `json:"session_id"`
@@ -87,6 +107,8 @@ type ToolCall struct {
 	Timestamp             time.Time `json:"timestamp"`
 	ToolName              string    `json:"tool_name"`
 	ToolCategory          string    `json:"tool_category"`
+	ToolTransport         string    `json:"tool_transport,omitempty"`
+	ToolServer            string    `json:"tool_server,omitempty"`
 	ArgumentsRedacted     string    `json:"arguments_redacted,omitempty"`
 	ResultPreviewRedacted string    `json:"result_preview_redacted,omitempty"`
 	DurationMS            int64     `json:"duration_ms,omitempty"`
@@ -124,6 +146,11 @@ type Metrics struct {
 	ReasoningTokens         int64   `json:"reasoning_tokens"`
 	CacheRatio              float64 `json:"cache_ratio"`
 	ToolCalls               int     `json:"tool_calls"`
+	BuiltinToolCalls        int     `json:"builtin_tool_calls"`
+	MCPCalls                int     `json:"mcp_calls"`
+	AppToolCalls            int     `json:"app_tool_calls"`
+	UniqueTools             int     `json:"unique_tools"`
+	UniqueMCPServers        int     `json:"unique_mcp_servers"`
 	FailedToolCalls         int     `json:"failed_tool_calls"`
 	Reads                   int     `json:"reads"`
 	Searches                int     `json:"searches"`
@@ -139,6 +166,8 @@ type Metrics struct {
 // CalculateMetrics computes descriptive values without assigning a productivity score.
 func CalculateMetrics(s Session) Metrics {
 	m := Metrics{TurnCount: len(s.Turns), ToolCalls: len(s.ToolCalls), FindingCount: len(s.Findings)}
+	tools := map[string]struct{}{}
+	mcpServers := map[string]struct{}{}
 	if !s.EndedAt.IsZero() && !s.StartedAt.IsZero() {
 		m.DurationMS = s.EndedAt.Sub(s.StartedAt).Milliseconds()
 	}
@@ -152,6 +181,18 @@ func CalculateMetrics(s Session) Metrics {
 		m.CacheRatio = float64(m.CachedInputTokens) / float64(m.InputTokens)
 	}
 	for _, call := range s.ToolCalls {
+		tools[call.ToolName] = struct{}{}
+		switch call.ToolTransport {
+		case "mcp":
+			m.MCPCalls++
+			if call.ToolServer != "" {
+				mcpServers[call.ToolServer] = struct{}{}
+			}
+		case "app":
+			m.AppToolCalls++
+		default:
+			m.BuiltinToolCalls++
+		}
 		if !call.Success {
 			m.FailedToolCalls++
 		}
@@ -172,6 +213,8 @@ func CalculateMetrics(s Session) Metrics {
 			}
 		}
 	}
+	m.UniqueTools = len(tools)
+	m.UniqueMCPServers = len(mcpServers)
 	for _, event := range s.Events {
 		if event.EventType == "compaction" {
 			m.Compactions++

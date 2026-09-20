@@ -18,6 +18,7 @@ import (
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	"github.com/LanceSandino/sessionsift/src/internal/redact"
+	"github.com/LanceSandino/sessionsift/src/internal/toolmeta"
 )
 
 type envelope struct {
@@ -49,11 +50,11 @@ func (p *Parser) ParseFile(path string, archived bool) (domain.Session, string, 
 
 // Parse consumes a JSONL transcript and tolerates malformed individual lines.
 func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) {
-	s := domain.Session{ParserVersion: domain.ParserVersion, Kind: domain.DeveloperSession, Status: "completed", Archived: archived}
+	s := domain.Session{ParserVersion: domain.ParserVersion, Source: domain.SourceCodex, Kind: domain.DeveloperSession, Status: "completed", Archived: archived}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	turnIndex := map[string]int{}
-	toolIndex := map[string]int{}
+	toolIndex := map[string][]int{}
 	unsupported := map[string]int{}
 	currentTurn := ""
 	lineNumber := 0
@@ -113,6 +114,7 @@ func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) 
 	}
 	if s.Title == "" {
 		s.Title = "Untitled Codex session"
+		s.TitleSource = "fallback"
 	}
 	if s.Kind == domain.InternalReviewSession {
 		s.Title = "Auto-review approval assessment"
@@ -153,12 +155,14 @@ func preserveUnknown(s *domain.Session, record envelope, turnID, eventID string)
 
 func parseSessionMeta(s *domain.Session, raw json.RawMessage) {
 	var value struct {
-		ID         string          `json:"id"`
-		SessionID  string          `json:"session_id"`
-		CWD        string          `json:"cwd"`
-		Timestamp  time.Time       `json:"timestamp"`
-		CLIVersion string          `json:"cli_version"`
-		Source     json.RawMessage `json:"source"`
+		ID           string          `json:"id"`
+		SessionID    string          `json:"session_id"`
+		CWD          string          `json:"cwd"`
+		Timestamp    time.Time       `json:"timestamp"`
+		CLIVersion   string          `json:"cli_version"`
+		Originator   string          `json:"originator"`
+		ThreadSource string          `json:"thread_source"`
+		Source       json.RawMessage `json:"source"`
 	}
 	if json.Unmarshal(raw, &value) != nil {
 		return
@@ -168,6 +172,12 @@ func parseSessionMeta(s *domain.Session, raw json.RawMessage) {
 	s.ExternalSessionID = first(value.ID, value.SessionID)
 	s.CWD = value.CWD
 	s.SourceVersion = value.CLIVersion
+	s.Originator = redact.Text(value.Originator, 120)
+	s.ThreadSource = redact.Text(value.ThreadSource, 80)
+	var surface string
+	if json.Unmarshal(value.Source, &surface) == nil {
+		s.Surface = redact.Text(surface, 80)
+	}
 	var source struct {
 		Subagent map[string]any `json:"subagent"`
 	}
@@ -217,7 +227,7 @@ func parseTurn(s *domain.Session, record envelope, indexes map[string]int) strin
 	return id
 }
 
-func parseResponse(s *domain.Session, record envelope, turnID, eventID string, toolIndexes map[string]int) {
+func parseResponse(s *domain.Session, record envelope, turnID, eventID string, toolIndexes map[string][]int) {
 	var value map[string]any
 	if json.Unmarshal(record.Payload, &value) != nil {
 		return
@@ -235,13 +245,19 @@ func parseResponse(s *domain.Session, record envelope, turnID, eventID string, t
 			if text == "" {
 				return
 			}
+			eventType, eventSubtype := "prompt", ""
 			if turn := findTurn(s, turnID); turn != nil {
-				turn.UserPromptRedacted = redact.Text(text, 12_000)
+				if turn.UserPromptRedacted == "" {
+					turn.UserPromptRedacted = redact.Text(text, 12_000)
+				} else {
+					eventType, eventSubtype = "message", "steering_or_queued"
+				}
 			}
 			if s.Title == "" {
 				s.Title = titleFrom(text)
+				s.TitleSource = "first_prompt"
 			}
-			s.Events = append(s.Events, domain.Event{ID: eventID, SessionID: s.ID, TurnID: turnID, Timestamp: record.Timestamp, EventType: "prompt", Source: "transcript", PayloadRedacted: map[string]any{"text": redact.Text(text, 2_000)}})
+			s.Events = append(s.Events, domain.Event{ID: eventID, SessionID: s.ID, TurnID: turnID, Timestamp: record.Timestamp, EventType: eventType, EventSubtype: eventSubtype, Source: "transcript", PayloadRedacted: map[string]any{"text": redact.Text(text, 2_000)}})
 		} else if role == "assistant" {
 			if turn := findTurn(s, turnID); turn != nil {
 				turn.AssistantSummaryRedacted = redact.Text(text, 2_000)
@@ -255,17 +271,46 @@ func parseResponse(s *domain.Session, record envelope, turnID, eventID string, t
 		if arguments == "" {
 			arguments = anyString(value["input"])
 		}
-		call := newToolCall(callID, s.ID, turnID, record.Timestamp, name, arguments)
-		toolIndexes[callID] = len(s.ToolCalls)
-		s.ToolCalls = append(s.ToolCalls, call)
-		s.Events = append(s.Events, domain.Event{ID: eventID, SessionID: s.ID, TurnID: turnID, Timestamp: record.Timestamp, EventType: "tool", EventSubtype: call.ToolCategory, Source: "transcript", PayloadRedacted: map[string]any{"tool_name": name, "target": call.TargetPathDisplay}})
+		names := []string{name}
+		if kind == "custom_tool_call" && name == "exec" {
+			if nested := nestedToolNames(arguments); len(nested) > 0 {
+				names = nested
+			}
+		}
+		for index, exactName := range names {
+			exactID := callID
+			exactEventID := eventID
+			if len(names) > 1 || exactName != name {
+				exactID = fmt.Sprintf("%s:%d", callID, index+1)
+				exactEventID = fmt.Sprintf("%s:tool-%d", eventID, index+1)
+			}
+			call := newToolCall(exactID, s.ID, turnID, record.Timestamp, exactName, arguments)
+			toolIndexes[callID] = append(toolIndexes[callID], len(s.ToolCalls))
+			s.ToolCalls = append(s.ToolCalls, call)
+			s.Events = append(s.Events, domain.Event{ID: exactEventID, SessionID: s.ID, TurnID: turnID, Timestamp: record.Timestamp, EventType: "tool", EventSubtype: call.ToolCategory, Source: "transcript", PayloadRedacted: map[string]any{"tool_name": exactName, "target": call.TargetPathDisplay}})
+		}
 	case "function_call_output", "custom_tool_call_output":
 		callID := stringValue(value, "call_id", "id")
-		if index, ok := toolIndexes[callID]; ok {
+		if indexes, ok := toolIndexes[callID]; ok {
 			output := anyString(value["output"])
-			updateToolResult(&s.ToolCalls[index], output)
+			for _, index := range indexes {
+				updateToolResult(&s.ToolCalls[index], output)
+			}
 		}
 	}
+}
+
+var nestedToolPattern = regexp.MustCompile(`\btools\.([A-Za-z][A-Za-z0-9_]*)\s*\(`)
+
+func nestedToolNames(input string) []string {
+	matches := nestedToolPattern.FindAllStringSubmatch(input, -1)
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			names = append(names, match[1])
+		}
+	}
+	return names
 }
 
 func parseEventMessage(s *domain.Session, record envelope, turnID, eventID string, turnIndexes map[string]int) {
@@ -323,6 +368,7 @@ func newToolCall(id, sessionID, turnID string, at time.Time, name, arguments str
 	category := classify(name, arguments)
 	target := extractTarget(arguments)
 	call := domain.ToolCall{ID: id, SessionID: sessionID, TurnID: turnID, Timestamp: at, ToolName: name, ToolCategory: category, ArgumentsRedacted: redactedArgs, Success: true}
+	call.ToolTransport, call.ToolServer = toolmeta.Describe(name)
 	if target != "" {
 		call.TargetPathHash = redact.Hash(target)
 		call.TargetPathDisplay = redact.DisplayPath(target)

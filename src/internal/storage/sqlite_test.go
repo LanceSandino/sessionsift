@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -50,6 +51,14 @@ func TestGetMissingSession(t *testing.T) {
 	}
 }
 
+func TestOpenFailsWhenParentDirectoryIsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "test.db")
+	if store, err := Open(path); err == nil {
+		store.Close()
+		t.Fatal("expected open to fail for a missing parent directory")
+	}
+}
+
 func TestImportNeededAndHookPlaceholder(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -87,5 +96,98 @@ func TestImportNeededAndHookPlaceholder(t *testing.T) {
 	session, err = store.GetSession(ctx, "live")
 	if err != nil || len(session.Turns) != 1 || session.Turns[0].TokenSource != "otel" || session.Turns[0].InputTokens != 120 {
 		t.Fatalf("OTel session=%+v err=%v", session, err)
+	}
+}
+
+func TestReconcileChatGPTSourcePrunesOnlyUnreferencedSessions(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, id := range []string{"chat-1", "chat-2"} {
+		session := domain.Session{
+			ID:                id,
+			ExternalSessionID: id,
+			Source:            domain.SourceChatGPT,
+			Kind:              domain.ChatSession,
+			Title:             id,
+			StartedAt:         now,
+			EndedAt:           now,
+			ParserVersion:     domain.ChatGPTExportVersion,
+		}
+		if err := store.SaveImport(ctx, "path-"+id, "fingerprint", session); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.ReconcileChatGPTSource(ctx, "export-a", []string{"chat-1", "chat-2", "chat-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReconcileChatGPTSource(ctx, "export-b", []string{"chat-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReconcileChatGPTSource(ctx, "export-a", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetSession(ctx, "chat-1"); err == nil {
+		t.Fatal("expected an unreferenced chat to be pruned")
+	}
+	if _, err := store.GetSession(ctx, "chat-2"); err != nil {
+		t.Fatalf("expected shared chat to remain: %v", err)
+	}
+	needed, err := store.ImportNeeded(ctx, "path-chat-1", "fingerprint")
+	if err != nil || !needed {
+		t.Fatalf("expected pruned import to be needed again: needed=%v err=%v", needed, err)
+	}
+
+	if err := store.ReconcileChatGPTSource(ctx, "export-b", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetSession(ctx, "chat-2"); err == nil {
+		t.Fatal("expected the last unreferenced chat to be pruned")
+	}
+}
+
+func TestReconcileChatGPTSourceHonorsCanceledContext(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := store.ReconcileChatGPTSource(ctx, "export", nil); err == nil {
+		t.Fatal("expected canceled context error")
+	}
+}
+
+func TestMetricIntAndBoundedTitleVariants(t *testing.T) {
+	cases := []struct {
+		value any
+		want  int64
+		ok    bool
+	}{
+		{value: int64(12), want: 12, ok: true},
+		{value: float64(13), want: 13, ok: true},
+		{value: json.Number("14"), want: 14, ok: true},
+		{value: json.Number("bad"), ok: false},
+		{value: "15", ok: false},
+	}
+	for _, test := range cases {
+		got, ok := metricInt(map[string]any{"tokens": test.value}, "missing", "tokens")
+		if got != test.want || ok != test.ok {
+			t.Fatalf("metricInt(%v)=(%d,%v), want (%d,%v)", test.value, got, ok, test.want, test.ok)
+		}
+	}
+	if title := boundedTitle("  a   short\n title "); title != "a short title" {
+		t.Fatalf("unexpected normalized title %q", title)
+	}
+	long := "123456789012345678901234567890123456789012345678901234567890123456789012345678901"
+	if title := boundedTitle(long); len(title) != 80 || title[len(title)-3:] != "…" {
+		t.Fatalf("unexpected bounded title %q", title)
 	}
 }

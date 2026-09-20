@@ -13,6 +13,18 @@ func TestCalculateMetrics(t *testing.T) {
 		t.Fatalf("metrics=%+v", got)
 	}
 }
+
+func TestCalculateMetricsCountsToolTransports(t *testing.T) {
+	session := Session{ToolCalls: []ToolCall{
+		{ToolName: "exec", ToolTransport: "builtin", Success: true},
+		{ToolName: "mcp__canva__create", ToolTransport: "mcp", ToolServer: "canva", Success: true},
+		{ToolName: "mcp__canva__search", ToolTransport: "mcp", ToolServer: "canva", Success: false},
+	}}
+	metrics := CalculateMetrics(session)
+	if metrics.MCPCalls != 2 || metrics.BuiltinToolCalls != 1 || metrics.UniqueTools != 3 || metrics.UniqueMCPServers != 1 {
+		t.Fatalf("metrics=%+v", metrics)
+	}
+}
 func TestCalculateMetricsEmpty(t *testing.T) {
 	got := CalculateMetrics(Session{})
 	if got.CacheRatio != 0 || got.ExplorationRatio != 0 || got.DurationMS != 0 {

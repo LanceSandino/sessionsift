@@ -17,6 +17,9 @@ func TestResolveAndEnsurePrivateState(t *testing.T) {
 	if paths.Database != filepath.Join(home, "sessionsift.db") {
 		t.Fatalf("database=%s", paths.Database)
 	}
+	if paths.ChatGPTExport != filepath.Join(home, "chatgpt-export.path") {
+		t.Fatalf("chatgpt export config=%s", paths.ChatGPTExport)
+	}
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}

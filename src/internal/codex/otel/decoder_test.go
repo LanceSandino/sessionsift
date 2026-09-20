@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	collectorlogsv1 "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	collectormetricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcev1 "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -101,5 +103,33 @@ func TestDecodeSkipsUnattributedRecords(t *testing.T) {
 	events, err := Decode("application/x-protobuf", body)
 	if err != nil || len(events) != 0 {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestDecodeMetricsBinaryAndJSON(t *testing.T) {
+	request := &collectormetricsv1.ExportMetricsServiceRequest{
+		ResourceMetrics: []*metricsv1.ResourceMetrics{{
+			ScopeMetrics: []*metricsv1.ScopeMetrics{{Metrics: []*metricsv1.Metric{
+				{Name: "codex.thread.started", Data: &metricsv1.Metric_Sum{Sum: &metricsv1.Sum{DataPoints: []*metricsv1.NumberDataPoint{{TimeUnixNano: 100}}}}},
+				{Name: "codex.tool.duration", Data: &metricsv1.Metric_Histogram{Histogram: &metricsv1.Histogram{DataPoints: []*metricsv1.HistogramDataPoint{{TimeUnixNano: 200}, {TimeUnixNano: 300}}}}},
+			}}}},
+		},
+	}
+	binary, err := proto.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonBody, err := protojson.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for contentType, body := range map[string][]byte{"application/x-protobuf": binary, "application/json": jsonBody} {
+		count, err := DecodeMetrics(contentType, body)
+		if err != nil || count != 3 {
+			t.Fatalf("type=%s count=%d err=%v", contentType, count, err)
+		}
+	}
+	if _, err := DecodeMetrics("application/x-protobuf", []byte("broken")); err == nil {
+		t.Fatal("expected metrics decode error")
 	}
 }
