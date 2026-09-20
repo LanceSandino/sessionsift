@@ -13,9 +13,17 @@ import (
 
 func TestHealthAndBackupProduceRestorablePrivateDatabase(t *testing.T) {
 	directory := t.TempDir()
-	store, err := Open(filepath.Join(directory, "live.db"))
+	livePath := filepath.Join(directory, "live.db")
+	store, err := Open(livePath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	info, statErr := os.Stat(livePath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("live database mode=%v", info.Mode().Perm())
 	}
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -33,7 +41,7 @@ func TestHealthAndBackupProduceRestorablePrivateDatabase(t *testing.T) {
 	if err := store.Backup(ctx, destination); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(destination)
+	info, err = os.Stat(destination)
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("backup mode=%v err=%v", info.Mode().Perm(), err)
 	}
@@ -54,6 +62,24 @@ func TestHealthAndBackupProduceRestorablePrivateDatabase(t *testing.T) {
 	}
 	if err := store.Health(ctx); err == nil {
 		t.Fatal("closed store reported healthy")
+	}
+}
+
+func TestHealthIsNotStarvedByActiveIngestionConnection(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sessionsift.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err = store.Health(ctx); err != nil {
+		t.Fatalf("readiness was starved by active connection: %v", err)
 	}
 }
 

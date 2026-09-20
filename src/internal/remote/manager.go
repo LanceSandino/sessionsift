@@ -36,10 +36,13 @@ type Pairing struct {
 }
 type Grant struct {
 	ID         string               `json:"id"`
+	InviteID   string               `json:"invite_id,omitempty"`
 	TokenHash  string               `json:"-"`
 	Reviewer   string               `json:"reviewer"`
 	AuthMethod string               `json:"auth_method,omitempty"`
 	Principal  string               `json:"principal,omitempty"`
+	Role       string               `json:"role,omitempty"`
+	SessionIDs []string             `json:"session_ids,omitempty"`
 	Operations []protocol.Operation `json:"operations"`
 	CreatedAt  time.Time            `json:"created_at"`
 	ExpiresAt  time.Time            `json:"expires_at"`
@@ -92,10 +95,13 @@ type managerState struct {
 
 type storedGrant struct {
 	ID         string               `json:"id"`
+	InviteID   string               `json:"invite_id,omitempty"`
 	TokenHash  string               `json:"token_hash,omitempty"`
 	Reviewer   string               `json:"reviewer"`
 	AuthMethod string               `json:"auth_method,omitempty"`
 	Principal  string               `json:"principal,omitempty"`
+	Role       string               `json:"role,omitempty"`
+	SessionIDs []string             `json:"session_ids,omitempty"`
 	Operations []protocol.Operation `json:"operations"`
 	CreatedAt  time.Time            `json:"created_at"`
 	ExpiresAt  time.Time            `json:"expires_at"`
@@ -118,6 +124,7 @@ type Manager struct {
 	now          func() time.Time
 	claimBuckets map[string]rateBucket
 	grantBuckets map[string]rateBucket
+	auditErr     error
 }
 
 type rateBucket struct {
@@ -269,6 +276,42 @@ func (m *Manager) ApproveOAuthPrincipal(principal string, operations []protocol.
 	m.state.Connections = append(m.state.Connections, connection)
 	return grant, m.persist()
 }
+
+// ApproveInvitePrincipal persists the local half of a hosted, single-session grant.
+// The local agent derives capabilities from the role instead of trusting the bridge.
+func (m *Manager) ApproveInvitePrincipal(inviteID, principal, sessionID, role string, expiresAt time.Time) (Grant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	principal, err := normalizePrincipal(principal)
+	if err != nil {
+		return Grant{}, err
+	}
+	if inviteID == "" || sessionID == "" {
+		return Grant{}, errors.New("invite and session are required")
+	}
+	operations, ok := protocol.InvitationOperations(role)
+	if !ok {
+		return Grant{}, errors.New("invalid invitation role")
+	}
+	now := m.now()
+	if !expiresAt.After(now) || expiresAt.After(now.Add(30*24*time.Hour)) {
+		return Grant{}, errors.New("invitation expiry must be within 30 days")
+	}
+	for _, existing := range m.state.Grants {
+		if existing.InviteID == inviteID {
+			return Grant{}, errors.New("invitation grant already exists")
+		}
+	}
+	grant := Grant{
+		ID: "grant_" + shortHash(inviteID+principal+sessionID), InviteID: inviteID,
+		Reviewer: principal, AuthMethod: "invite", Principal: principal, Role: role,
+		SessionIDs: []string{sessionID}, Operations: operations, CreatedAt: now, ExpiresAt: expiresAt,
+	}
+	connection := Connection{ID: "connection_" + shortHash(grant.ID), GrantID: grant.ID, Reviewer: principal, ConnectedAt: now, LastSeenAt: now, Active: true}
+	m.state.Grants = append(m.state.Grants, grant)
+	m.state.Connections = append(m.state.Connections, connection)
+	return grant, m.persist()
+}
 func (m *Manager) Authorize(_ context.Context, token string, operation protocol.Operation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -309,6 +352,39 @@ func (m *Manager) AuthorizePrincipal(_ context.Context, principal string, operat
 		}
 	}
 	return errors.New("capability denied")
+}
+
+// AuthorizePrincipalRequest enforces both capability and exact session scope.
+// Broad OAuth grants remain operation-scoped; invite grants must name one session.
+func (m *Manager) AuthorizePrincipalRequest(_ context.Context, principal string, request protocol.Request) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	principal, err := normalizePrincipal(principal)
+	if err != nil {
+		return err
+	}
+	now := m.now()
+	foundPrincipal := false
+	for index := len(m.state.Grants) - 1; index >= 0; index-- {
+		grant := &m.state.Grants[index]
+		if grant.Principal != principal || (grant.AuthMethod != "oauth" && grant.AuthMethod != "invite") {
+			continue
+		}
+		foundPrincipal = true
+		if grant.Revoked || now.After(grant.ExpiresAt) || !operationAllowed(grant.Operations, request.Operation) {
+			continue
+		}
+		if grant.AuthMethod == "invite" && !requestTargetsOnly(request, grant.SessionIDs) {
+			continue
+		}
+		m.touchConnection(grant.ID)
+		_ = m.persist()
+		return nil
+	}
+	if foundPrincipal {
+		return errors.New("capability or session denied")
+	}
+	return errors.New("principal is not locally approved")
 }
 
 func (m *Manager) Authenticate(token string) (Grant, error) {
@@ -367,6 +443,73 @@ func (m *Manager) OAuthGrants() []Grant {
 		}
 	}
 	return values
+}
+
+// InviteGrants returns hosted invitation grants without any bearer material.
+func (m *Manager) InviteGrants() []Grant {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	values := make([]Grant, 0)
+	for _, grant := range m.state.Grants {
+		if grant.AuthMethod == "invite" {
+			values = append(values, grant)
+		}
+	}
+	return values
+}
+
+// GrantForPrincipal returns the active locally approved OAuth grant.
+func (m *Manager) GrantForPrincipal(principal string) (Grant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.principalGrantLocked(principal)
+}
+
+// RevokePrincipal removes every active OAuth grant for one normalized identity.
+func (m *Manager) RevokePrincipal(principal string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	principal, err := normalizePrincipal(principal)
+	if err != nil {
+		return err
+	}
+	found := false
+	for index := range m.state.Grants {
+		grant := &m.state.Grants[index]
+		if grant.AuthMethod != "oauth" || grant.Principal != principal || grant.Revoked {
+			continue
+		}
+		grant.Revoked = true
+		found = true
+		for connectionIndex := range m.state.Connections {
+			if m.state.Connections[connectionIndex].GrantID == grant.ID {
+				m.state.Connections[connectionIndex].Active = false
+			}
+		}
+	}
+	if !found {
+		return errors.New("OAuth principal grant not found")
+	}
+	return m.persist()
+}
+
+func (m *Manager) RevokeInvitation(inviteID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for index := range m.state.Grants {
+		grant := &m.state.Grants[index]
+		if grant.AuthMethod != "invite" || grant.InviteID != inviteID || grant.Revoked {
+			continue
+		}
+		grant.Revoked = true
+		for connectionIndex := range m.state.Connections {
+			if m.state.Connections[connectionIndex].GrantID == grant.ID {
+				m.state.Connections[connectionIndex].Active = false
+			}
+		}
+		return m.persist()
+	}
+	return errors.New("invitation grant not found")
 }
 func (m *Manager) Revoke(id string) error {
 	m.mu.Lock()
@@ -449,6 +592,36 @@ func (m *Manager) principalGrantLocked(principal string) (Grant, error) {
 	return Grant{}, errors.New("OAuth principal is not locally approved")
 }
 
+func operationAllowed(operations []protocol.Operation, operation protocol.Operation) bool {
+	for _, allowed := range operations {
+		if allowed == operation {
+			return true
+		}
+	}
+	return false
+}
+
+func requestTargetsOnly(request protocol.Request, sessionIDs []string) bool {
+	if len(sessionIDs) != 1 {
+		return false
+	}
+	var arguments map[string]any
+	if len(request.Arguments) == 0 || json.Unmarshal(request.Arguments, &arguments) != nil {
+		return false
+	}
+	target, ok := arguments["session_id"].(string)
+	if !ok || target == "" || target != sessionIDs[0] {
+		return false
+	}
+	if comparison, exists := arguments["a"]; exists && comparison != target {
+		return false
+	}
+	if comparison, exists := arguments["b"]; exists && comparison != target {
+		return false
+	}
+	return true
+}
+
 func (m *Manager) allow(buckets map[string]rateBucket, key string, maximum int, window time.Duration) bool {
 	if key == "" {
 		key = "unknown"
@@ -473,12 +646,19 @@ func (m *Manager) RecordAudit(record AuditRecord) {
 		record.Timestamp = m.now()
 	}
 	m.state.Audit = append(m.state.Audit, record)
-	_ = m.persist()
+	m.auditErr = m.persist()
 }
 func (m *Manager) Audit() []AuditRecord {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]AuditRecord{}, m.state.Audit...)
+}
+
+// AuditHealthy reports persistence failure without leaking paths or record data.
+func (m *Manager) AuditHealthy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.auditErr == nil
 }
 func (m *Manager) AddAnnotation(sessionID, turnID, author, body string) (Annotation, error) {
 	m.mu.Lock()

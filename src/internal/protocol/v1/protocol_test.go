@@ -47,3 +47,26 @@ func TestRequestValidationFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestInvitationOperationsAreCanonicalAndIsolated(t *testing.T) {
+	view, ok := InvitationOperations("view")
+	if !ok || len(view) != 5 {
+		t.Fatalf("view operations=%v ok=%v", view, ok)
+	}
+	comment, ok := InvitationOperations("comment")
+	if !ok || len(comment) != 7 || comment[len(comment)-1] != AnnotationCreate {
+		t.Fatalf("comment operations=%v ok=%v", comment, ok)
+	}
+	review, ok := InvitationOperations("review")
+	if !ok || len(review) != 9 || review[len(review)-1] != ReviewCreate {
+		t.Fatalf("review operations=%v ok=%v", review, ok)
+	}
+	if _, ok = InvitationOperations("owner"); ok {
+		t.Fatal("unknown invitation role was accepted")
+	}
+	view[0] = SessionList
+	fresh, _ := InvitationOperations("view")
+	if fresh[0] == SessionList {
+		t.Fatal("caller mutated the canonical invitation operation set")
+	}
+}

@@ -1,0 +1,25 @@
+/** @module HostedLayout @description Full-width fixed viewport, independent panes and explicit expansion. */
+main{width:100%!important;max-width:none!important;margin:0!important;padding:16px clamp(12px,2vw,28px)!important;min-width:0}
+main>.grid{grid-template-columns:minmax(240px,.7fr) minmax(220px,.6fr) minmax(0,1.7fr)!important;gap:16px;min-width:0}
+main :is(.card,.section,.devices,.scroll,.panel){min-width:0}
+main :is(.stack,.stack>*,label,.target,.target>*,.device,.device>*){min-width:0;max-width:100%}
+main :is(select,input,textarea){min-width:0;max-width:100%;box-sizing:border-box}
+.target{flex-wrap:wrap;gap:8px}.target strong{display:block;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}.target .eyebrow{display:block;margin-bottom:4px}
+.device strong,.device small{overflow-wrap:anywhere}
+main .grid .card[data-card=sessions],main .grid .card[data-card=sessions].active{display:flex;flex-direction:column;overflow:hidden!important}
+[data-card=sessions]>.cardHead{flex:0 0 auto;position:static;margin:0 0 10px;padding:0 0 10px;background:transparent}
+#sessionList{flex:0 1 28%;overflow:auto;min-height:64px;display:grid;gap:6px;align-content:start}
+#sessionDetail{flex:1 1 0;min-height:0;overflow:auto;margin-top:10px;padding:12px;border-top:1px solid #294252}
+#sessionDetail:empty{display:none}
+[data-card=sessions]:has(#sessionDetail:empty) #sessionList{flex:1 1 auto}
+#sessionDetail .device{padding:14px;margin:0 0 12px;background:#101e30}
+#sessionDetail .device>small{display:block;color:#9aabc3;margin-bottom:8px}
+.bubble{max-width:92%!important;min-width:0;white-space:normal!important}
+.bubbleRow.assistant .bubble{flex:1}
+.paneExpand{flex:0 0 auto;align-self:flex-end;min-height:34px;margin:0 0 7px;border:1px solid #345064;border-radius:8px;padding:5px 10px;background:#14283b;color:#b5e7ed;cursor:pointer}
+.paneExpanded{position:fixed!important;inset:max(10px,env(safe-area-inset-top)) 10px max(10px,env(safe-area-inset-bottom))!important;width:auto!important;height:auto!important;max-height:none!important;z-index:50!important;box-shadow:0 0 0 100vmax #020916de!important;overflow:auto!important}
+.paneExpand{position:sticky;top:0;z-index:4}
+*{scrollbar-width:thin;scrollbar-color:#426b7d #0a1423}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#426b7d;border-radius:8px;border:2px solid #0a1423}::-webkit-scrollbar-track{background:#0a1423}
+@media(max-width:1099px){main:has(>.grid){grid-template-rows:auto auto auto minmax(0,1fr) auto}main>.grid{display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-rows:minmax(0,1fr)}[data-card]:not(.active){display:none!important}.mobileTabs{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}#sessionList{flex-basis:25%}}
+@media(max-width:720px){main{padding:10px!important}.top{padding-inline:12px!important}.hero h1{font-size:22px!important}.bubble{max-width:calc(100% - 36px)!important}.checkpoint{display:block!important}.checkpoint select{max-width:100%;width:100%;min-height:40px;background:#11263a;color:#eaf2f8;border:1px solid #345064;border-radius:9px}.paneExpand{min-height:40px}.card{padding:12px!important}.cardHead h2{font-size:18px}.identity{font-size:10px}#sessionDetail{padding:8px 0}}

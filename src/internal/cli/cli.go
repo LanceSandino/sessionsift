@@ -18,9 +18,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/accessauth"
 	"github.com/LanceSandino/sessionsift/src/internal/agent/service"
 	"github.com/LanceSandino/sessionsift/src/internal/api"
 	"github.com/LanceSandino/sessionsift/src/internal/app"
+	bridgeapp "github.com/LanceSandino/sessionsift/src/internal/bridge"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/discover"
 	"github.com/LanceSandino/sessionsift/src/internal/codexconfig"
 	"github.com/LanceSandino/sessionsift/src/internal/config"
@@ -31,6 +33,8 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
+
+var hostedHTTPClient *http.Client
 
 // Run executes a command and returns a process exit code.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
@@ -49,6 +53,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return 0
 	case "start":
 		return start(ctx, paths, out, errOut)
+	case "bridge":
+		return startBridge(ctx, out, errOut)
+	case "agent":
+		return agentCommand(ctx, paths, args[1:], out, errOut)
 	case "stop":
 		return stop(paths, out, errOut)
 	case "status":
@@ -99,7 +107,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sessionsift <start|stop|status|backup|import|import-chatgpt|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
+	fmt.Fprintln(w, "usage: sessionsift <start|bridge|agent|stop|status|backup|import|import-chatgpt|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
 }
 
 func openStore(paths config.Paths) (*storage.Store, error) {
@@ -139,7 +147,15 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	if remoteErr != nil {
 		return fail(errOut, remoteErr)
 	}
-	handler := api.HandlerWithRemote(store, remoteManager, identity)
+	var hostedConfig *remote.HostedConfig
+	var hostedInviter *remote.HostedInviter
+	if hosted, hostedErr := remote.LoadHostedConfig(paths.HostedBridge); hostedErr == nil {
+		hostedConfig = &hosted
+		hostedInviter = remote.NewHostedInviter(nil, hosted, identity, remoteManager)
+	} else if !errors.Is(hostedErr, os.ErrNotExist) {
+		fmt.Fprintf(errOut, "hosted bridge configuration warning: %v\n", hostedErr)
+	}
+	handler := api.HandlerWithHostedInvites(store, remoteManager, identity, hostedInviter)
 	if !loopbackListener(address) {
 		handler = localProxyOnly(handler)
 	}
@@ -153,6 +169,13 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		go importAndWatchChatGPT(stopCtx, store, chatGPTExport, out, errOut)
 	}
 	go runBackups(stopCtx, store, paths.Backups, errOut)
+	if hostedConfig != nil {
+		agent := remote.NewAgent(identity, remoteManager, store)
+		go remote.RunHostedLoop(stopCtx, agent, nil, *hostedConfig, func(loopErr error) {
+			fmt.Fprintf(errOut, "hosted bridge warning: %v\n", loopErr)
+		})
+		fmt.Fprintf(out, "Outbound bridge connected to %s\n", hostedConfig.URL)
+	}
 	go func() {
 		<-stopCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -164,6 +187,173 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	return 0
+}
+
+func startBridge(ctx context.Context, out, errOut io.Writer) int {
+	home := strings.TrimSpace(os.Getenv("SESSIONSIFT_BRIDGE_HOME"))
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return fail(errOut, err)
+		}
+		home = filepath.Join(userHome, ".sessionsift-bridge")
+	}
+	home = filepath.Clean(home)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return fail(errOut, err)
+	}
+	store, err := bridgeapp.Open(filepath.Join(home, "bridge.db"))
+	if err != nil {
+		return fail(errOut, err)
+	}
+	defer store.Close()
+	verifier, err := accessauth.NewFromEnv(nil)
+	if err != nil {
+		return fail(errOut, fmt.Errorf("bridge requires SESSIONSIFT_ACCESS_ISSUER and SESSIONSIFT_ACCESS_AUD: %w", err))
+	}
+	publicURL := strings.TrimSpace(os.Getenv("SESSIONSIFT_PUBLIC_URL"))
+	if publicURL == "" {
+		publicURL = "https://bridge.example.com"
+	}
+	address := bridgeAddress()
+	listener, err := listenTCP("tcp", address)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	server := &http.Server{Handler: localProxyOnly(bridgeapp.NewHandler(store, verifier, publicURL)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	stopCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go runBridgeMaintenance(stopCtx, store, filepath.Join(home, "backups"), errOut)
+	go func() {
+		<-stopCtx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	fmt.Fprintf(out, "SessionSift bridge is running at http://%s\n", localAddress(address))
+	if err = server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fail(errOut, err)
+	}
+	return 0
+}
+
+func bridgeAddress() string {
+	value := strings.TrimSpace(os.Getenv("SESSIONSIFT_BRIDGE_ADDR"))
+	if value == "" {
+		return "127.0.0.1:7780"
+	}
+	host, _, err := net.SplitHostPort(value)
+	if err != nil || (host != "0.0.0.0" && host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		return "127.0.0.1:7780"
+	}
+	return value
+}
+
+func agentCommand(ctx context.Context, paths config.Paths, args []string, out, errOut io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(errOut, "usage: sessionsift agent <enroll|share|revoke|status>")
+		return 2
+	}
+	if err := paths.Ensure(); err != nil {
+		return fail(errOut, err)
+	}
+	identity, err := remote.LoadOrCreateIdentity(paths.DeviceIdentity)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	manager, err := remote.OpenManager(paths.RemoteState)
+	if err != nil {
+		return fail(errOut, err)
+	}
+	switch args[0] {
+	case "enroll":
+		if len(args) < 3 {
+			fmt.Fprintln(errOut, "usage: sessionsift agent enroll <bridge-url> <code> [device-name]")
+			return 2
+		}
+		name := "SessionSift device"
+		if hostname, hostErr := os.Hostname(); hostErr == nil && hostname != "" {
+			name = hostname
+		}
+		if len(args) > 3 && strings.TrimSpace(args[3]) != "" {
+			name = strings.TrimSpace(args[3])
+		}
+		config, enrollErr := remote.EnrollHosted(ctx, hostedHTTPClient, args[1], args[2], name, identity)
+		if enrollErr != nil {
+			return fail(errOut, enrollErr)
+		}
+		grant, grantErr := manager.ApproveOAuthPrincipal(config.Owner, protocol.ReadOperations(), 30*24*time.Hour)
+		if grantErr != nil {
+			return fail(errOut, grantErr)
+		}
+		if grantErr = remote.RegisterHostedGrant(ctx, hostedHTTPClient, config, identity, config.Owner, grant.Operations, grant.ExpiresAt); grantErr != nil {
+			_ = manager.Revoke(grant.ID)
+			return fail(errOut, grantErr)
+		}
+		if saveErr := remote.SaveHostedConfig(paths.HostedBridge, config); saveErr != nil {
+			_ = remote.RevokeHostedGrant(ctx, hostedHTTPClient, config, identity, config.Owner)
+			_ = manager.Revoke(grant.ID)
+			return fail(errOut, saveErr)
+		}
+		fmt.Fprintf(out, "Connected %s to %s for %s. Restart SessionSift to begin outbound polling.\n", config.DeviceID, config.URL, config.Owner)
+		return 0
+	case "share":
+		if len(args) < 2 {
+			fmt.Fprintln(errOut, "usage: sessionsift agent share <email> [days]")
+			return 2
+		}
+		duration := 30 * 24 * time.Hour
+		if len(args) > 2 {
+			days, parseErr := strconv.Atoi(args[2])
+			if parseErr != nil || days < 1 || days > 30 {
+				fmt.Fprintln(errOut, "days must be between 1 and 30")
+				return 2
+			}
+			duration = time.Duration(days) * 24 * time.Hour
+		}
+		config, loadErr := remote.LoadHostedConfig(paths.HostedBridge)
+		if loadErr != nil {
+			return fail(errOut, errors.New("this device is not enrolled; run sessionsift agent enroll first"))
+		}
+		grant, grantErr := manager.ApproveOAuthPrincipal(args[1], protocol.ReadOperations(), duration)
+		if grantErr != nil {
+			return fail(errOut, grantErr)
+		}
+		if grantErr = remote.RegisterHostedGrant(ctx, hostedHTTPClient, config, identity, grant.Principal, grant.Operations, grant.ExpiresAt); grantErr != nil {
+			_ = manager.Revoke(grant.ID)
+			return fail(errOut, grantErr)
+		}
+		fmt.Fprintf(out, "Shared read-only session access with %s until %s.\n", grant.Principal, grant.ExpiresAt.Format(time.RFC3339))
+		return 0
+	case "revoke":
+		if len(args) < 2 {
+			fmt.Fprintln(errOut, "usage: sessionsift agent revoke <email>")
+			return 2
+		}
+		config, loadErr := remote.LoadHostedConfig(paths.HostedBridge)
+		if loadErr != nil {
+			return fail(errOut, loadErr)
+		}
+		if revokeErr := remote.RevokeHostedGrant(ctx, hostedHTTPClient, config, identity, args[1]); revokeErr != nil {
+			return fail(errOut, revokeErr)
+		}
+		if revokeErr := manager.RevokePrincipal(args[1]); revokeErr != nil {
+			return fail(errOut, revokeErr)
+		}
+		fmt.Fprintf(out, "Revoked hosted and local access for %s.\n", strings.ToLower(strings.TrimSpace(args[1])))
+		return 0
+	case "status":
+		config, loadErr := remote.LoadHostedConfig(paths.HostedBridge)
+		if loadErr != nil {
+			fmt.Fprintln(out, "Hosted bridge: not enrolled")
+			return 0
+		}
+		fmt.Fprintf(out, "Hosted bridge: %s\nDevice: %s\nOwner: %s\nLocal OAuth grants: %d\n", config.URL, config.DeviceID, config.Owner, len(manager.OAuthGrants()))
+		return 0
+	default:
+		fmt.Fprintln(errOut, "usage: sessionsift agent <enroll|share|revoke|status>")
+		return 2
+	}
 }
 
 func importAndWatchCodex(ctx context.Context, store *storage.Store, home string, out, errOut io.Writer) {

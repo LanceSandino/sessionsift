@@ -807,6 +807,34 @@
     flex-direction: column;
   }
 
+  .inviteForm {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inviteForm .primaryButton {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .inviteResult {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inviteResult button,
+  .inviteResult code {
+    grid-column: 1;
+  }
+
+  .inviteRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inviteRow button {
+    width: 100%;
+    min-height: 44px;
+  }
+
   .auditRow {
     grid-template-columns: minmax(0, 1fr) auto;
   }

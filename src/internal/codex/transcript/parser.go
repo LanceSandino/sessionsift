@@ -58,6 +58,8 @@ func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) 
 	unsupported := map[string]int{}
 	currentTurn := ""
 	lineNumber := 0
+	var latestRate rateLimitSnapshot
+	var fallbackEnd time.Time
 	for scanner.Scan() {
 		lineNumber++
 		line := scanner.Bytes()
@@ -69,19 +71,19 @@ func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) 
 		if s.StartedAt.IsZero() || (!record.Timestamp.IsZero() && record.Timestamp.Before(s.StartedAt)) {
 			s.StartedAt = record.Timestamp
 		}
-		if record.Timestamp.After(s.EndedAt) {
-			s.EndedAt = record.Timestamp
+		if record.Timestamp.After(fallbackEnd) {
+			fallbackEnd = record.Timestamp
 		}
 		eventID := fmt.Sprintf("evt-%06d", lineNumber)
 		switch record.Type {
 		case "session_meta":
 			parseSessionMeta(&s, record.Payload)
 		case "turn_context":
-			currentTurn = parseTurn(&s, record, turnIndex)
+			currentTurn = parseTurn(&s, record, turnIndex, latestRate)
 		case "response_item":
 			parseResponse(&s, record, currentTurn, eventID, toolIndex)
 		case "event_msg":
-			parseEventMessage(&s, record, currentTurn, eventID, turnIndex)
+			parseEventMessage(&s, record, currentTurn, eventID, turnIndex, &latestRate)
 		case "token_usage_record":
 			parseUsageRecord(&s, record.Payload, currentTurn, turnIndex)
 		case "compacted":
@@ -118,6 +120,18 @@ func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) 
 	}
 	if s.Kind == domain.InternalReviewSession {
 		s.Title = "Auto-review approval assessment"
+	}
+	for _, turn := range s.Turns {
+		candidate := turn.EndedAt
+		if candidate.IsZero() {
+			candidate = turn.StartedAt
+		}
+		if candidate.After(s.EndedAt) {
+			s.EndedAt = candidate
+		}
+	}
+	if s.EndedAt.IsZero() {
+		s.EndedAt = fallbackEnd
 	}
 	if s.EndedAt.IsZero() {
 		s.EndedAt = s.StartedAt
@@ -196,7 +210,14 @@ func parseSessionMeta(s *domain.Session, raw json.RawMessage) {
 	}
 }
 
-func parseTurn(s *domain.Session, record envelope, indexes map[string]int) string {
+type rateLimitSnapshot struct {
+	used     float64
+	window   int
+	resetsAt time.Time
+	valid    bool
+}
+
+func parseTurn(s *domain.Session, record envelope, indexes map[string]int, latest rateLimitSnapshot) string {
 	var value struct {
 		TurnID     string `json:"turn_id"`
 		RootTurnID string `json:"root_turn_id"`
@@ -213,7 +234,22 @@ func parseTurn(s *domain.Session, record envelope, indexes map[string]int) strin
 	}
 	if _, ok := indexes[id]; !ok {
 		indexes[id] = len(s.Turns)
-		s.Turns = append(s.Turns, domain.Turn{ID: id, SessionID: s.ID, ExternalTurnID: id, Sequence: len(s.Turns) + 1, StartedAt: record.Timestamp})
+		turn := domain.Turn{ID: id, SessionID: s.ID, ExternalTurnID: id, Sequence: len(s.Turns) + 1, StartedAt: record.Timestamp, Model: value.Model, ReasoningEffort: value.Effort}
+		if latest.valid {
+			start := latest.used
+			reset := latest.resetsAt
+			turn.RateLimitUsedStart = &start
+			turn.RateLimitWindowMinutes = latest.window
+			turn.RateLimitResetsAt = &reset
+		}
+		s.Turns = append(s.Turns, turn)
+	} else if turn := findTurn(s, id); turn != nil {
+		if value.Model != "" {
+			turn.Model = value.Model
+		}
+		if value.Effort != "" {
+			turn.ReasoningEffort = value.Effort
+		}
 	}
 	s.Model, s.ReasoningEffort = value.Model, value.Effort
 	if value.Model == "codex-auto-review" {
@@ -313,7 +349,7 @@ func nestedToolNames(input string) []string {
 	return names
 }
 
-func parseEventMessage(s *domain.Session, record envelope, turnID, eventID string, turnIndexes map[string]int) {
+func parseEventMessage(s *domain.Session, record envelope, turnID, eventID string, turnIndexes map[string]int, latest *rateLimitSnapshot) {
 	var value map[string]any
 	if json.Unmarshal(record.Payload, &value) != nil {
 		return
@@ -323,6 +359,36 @@ func parseEventMessage(s *domain.Session, record envelope, turnID, eventID strin
 		info, _ := value["info"].(map[string]any)
 		usage, _ := info["last_token_usage"].(map[string]any)
 		applyUsage(findTurn(s, turnID), usage, "transcript")
+		rateLimits, _ := value["rate_limits"].(map[string]any)
+		if primary, ok := rateLimits["primary"].(map[string]any); ok {
+			used, usedOK := numeric(primary["used_percent"])
+			window, windowOK := numeric(primary["window_minutes"])
+			reset, resetOK := numeric(primary["resets_at"])
+			if usedOK {
+				snapshot := rateLimitSnapshot{used: float64(used), valid: true}
+				if windowOK {
+					snapshot.window = int(window)
+				}
+				if resetOK {
+					snapshot.resetsAt = time.Unix(reset, 0).UTC()
+				}
+				if turn := findTurn(s, turnID); turn != nil {
+					resetObserved := latest.valid && snapshot.used < latest.used
+					if turn.RateLimitUsedStart == nil || resetObserved {
+						start := snapshot.used
+						turn.RateLimitUsedStart = &start
+					}
+					end := snapshot.used
+					turn.RateLimitUsedEnd = &end
+					turn.RateLimitWindowMinutes = snapshot.window
+					if !snapshot.resetsAt.IsZero() {
+						resetAt := snapshot.resetsAt
+						turn.RateLimitResetsAt = &resetAt
+					}
+				}
+				*latest = snapshot
+			}
+		}
 		return
 	}
 	if kind == "task_complete" || kind == "turn_aborted" {

@@ -21,6 +21,10 @@ var sdkRequest atomic.Uint64
 
 // NewSDKServer builds a current, backwards-compatible MCP server from the canonical Session Protocol.
 func NewSDKServer(executor Executor, allowed func(protocol.Operation) bool) *mcpsdk.Server {
+	return newSDKServer(executor, allowed, false)
+}
+
+func newSDKServer(executor Executor, allowed func(protocol.Operation) bool, oauth bool) *mcpsdk.Server {
 	if allowed == nil {
 		allowed = func(protocol.Operation) bool { return true }
 	}
@@ -34,11 +38,17 @@ func NewSDKServer(executor Executor, allowed func(protocol.Operation) bool) *mcp
 		if !allowed(definition.operation) {
 			continue
 		}
-		server.AddTool(&mcpsdk.Tool{
+		tool := &mcpsdk.Tool{
 			Name: definition.Name, Title: definition.Title, Description: definition.Description,
 			InputSchema: definition.InputSchema, OutputSchema: definition.OutputSchema,
 			Annotations: &mcpsdk.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &closed, IdempotentHint: true, OpenWorldHint: &closed},
-		}, func(ctx context.Context, request *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		}
+		if oauth {
+			// The current Go SDK models extension fields through _meta. OpenAI MCP
+			// clients use this declaration together with protected-resource discovery.
+			tool.Meta = mcpsdk.Meta{"securitySchemes": []map[string]any{{"type": "oauth2", "scopes": []string{"session.read"}}}}
+		}
+		server.AddTool(tool, func(ctx context.Context, request *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 			if executor == nil {
 				return nil, errors.New("MCP executor is required")
 			}
@@ -78,12 +88,13 @@ func ServeSDK(ctx context.Context, executor Executor, input io.Reader, output io
 
 // SDKHTTPHandler serves modern stateless Streamable HTTP and legacy stateless clients.
 func SDKHTTPHandler(executor Executor, allowed func(protocol.Operation) bool) http.Handler {
-	return mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
-		return NewSDKServer(executor, allowed)
+	transport := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
+		return newSDKServer(executor, allowed, true)
 	}, &mcpsdk.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, MaxRequestBodyBytes: maximumFrameBytes,
 		PropagateRequestCancellation: true, DisableLocalhostProtection: true,
 	})
+	return withTopLevelOAuthToolSecurity(transport)
 }
 
 type nopWriteCloser struct{ io.Writer }

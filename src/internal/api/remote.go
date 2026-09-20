@@ -21,10 +21,50 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
 
-func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, w http.ResponseWriter, r *http.Request) {
+func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, inviter *remote.HostedInviter, w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/remote/status":
-		writeJSON(w, http.StatusOK, map[string]any{"device_id": identity.ID, "pending_pairings": manager.PendingPairings(), "connections": manager.Connections(), "oauth_grants": manager.OAuthGrants(), "oauth_configured": verifier != nil, "audit": manager.Audit()})
+		writeJSON(w, http.StatusOK, map[string]any{"device_id": identity.ID, "pending_pairings": manager.PendingPairings(), "connections": manager.Connections(), "oauth_grants": manager.OAuthGrants(), "invite_grants": manager.InviteGrants(), "oauth_configured": verifier != nil, "hosted_invites_configured": inviter != nil, "audit": manager.Audit()})
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/remote/invitations":
+		if inviter == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "hosted invitations are not configured"})
+			return
+		}
+		values, err := inviter.List(r.Context())
+		remoteWrite(w, http.StatusOK, values, err)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote/invitations":
+		if inviter == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "hosted invitations are not configured"})
+			return
+		}
+		var body struct {
+			Invitee       string `json:"invitee"`
+			SessionID     string `json:"session_id"`
+			Role          string `json:"role"`
+			DurationHours int    `json:"duration_hours"`
+		}
+		if !decodeRemote(w, r, &body) {
+			return
+		}
+		if _, err := store.GetSession(r.Context(), body.SessionID); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		value, err := inviter.Create(r.Context(), body.Invitee, body.SessionID, body.Role, time.Duration(body.DurationHours)*time.Hour)
+		remoteWrite(w, http.StatusCreated, value, err)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote/invitations/revoke":
+		if inviter == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "hosted invitations are not configured"})
+			return
+		}
+		var body struct {
+			InvitationID string `json:"invitation_id"`
+		}
+		if !decodeRemote(w, r, &body) {
+			return
+		}
+		err := inviter.Revoke(r.Context(), body.InvitationID)
+		remoteWrite(w, http.StatusOK, map[string]bool{"revoked": err == nil}, err)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote/oauth/grants":
 		var body struct {
 			Principal    string               `json:"principal"`

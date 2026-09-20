@@ -126,6 +126,17 @@ func TestExecuteEnforcesResponseLimit(t *testing.T) {
 	}
 }
 
+func TestStorageFailureDoesNotMasqueradeAsMissingSession(t *testing.T) {
+	store := serviceStore(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	response := NewLocal(store).Execute(context.Background(), request(t, "busy", protocol.SessionGet, SessionArguments{SessionID: "s1"}))
+	if response.Status != protocol.StatusError || response.Error == nil {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
 type staticRepository struct {
 	sessions []domain.Session
 }
@@ -148,7 +159,7 @@ func request(t *testing.T, id string, operation protocol.Operation, arguments an
 
 type denyAuthorizer struct{}
 
-func (denyAuthorizer) Authorize(context.Context, protocol.Operation) error {
+func (denyAuthorizer) Authorize(context.Context, protocol.Request) error {
 	return errors.New("denied")
 }
 

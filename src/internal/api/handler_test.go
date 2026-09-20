@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/bridge"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"github.com/LanceSandino/sessionsift/src/internal/remote"
@@ -39,6 +40,70 @@ func TestSessionAndCompareRoutes(t *testing.T) {
 		handler.ServeHTTP(res, req)
 		if res.Code != http.StatusOK {
 			t.Errorf("%s status=%d body=%s", target, res.Code, res.Body.String())
+		}
+	}
+}
+
+func TestHostedInvitationOwnerRoutes(t *testing.T) {
+	state := t.TempDir()
+	bridgeStore, err := bridge.Open(filepath.Join(state, "bridge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeStore.Close()
+	bridgeHandler := bridge.NewHandler(bridgeStore, nil, "https://sessionsift.example")
+	client := &http.Client{Transport: apiRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		bridgeHandler.ServeHTTP(recorder, request)
+		return recorder.Result(), nil
+	})}
+	identity, err := remote.LoadOrCreateIdentity(filepath.Join(state, "identity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, _ := bridgeStore.CreateEnrollment("owner@example.com")
+	config, err := remote.EnrollHosted(context.Background(), client, "https://sessionsift.example", enrollment.Code, "Laptop", identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, _ := remote.OpenManager(filepath.Join(state, "remote.json"))
+	inviter := remote.NewHostedInviter(client, config, identity, manager)
+	handler := HandlerWithHostedInvites(testStore(t), manager, identity, inviter)
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return recorder
+	}
+	if status := call(http.MethodGet, "/api/v1/remote/status", ""); status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"hosted_invites_configured":true`) {
+		t.Fatalf("status=%d body=%s", status.Code, status.Body.String())
+	}
+	if missing := call(http.MethodPost, "/api/v1/remote/invitations", `{"invitee":"reviewer@example.com","session_id":"missing","role":"view","duration_hours":1}`); missing.Code != http.StatusNotFound {
+		t.Fatalf("missing session status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	created := call(http.MethodPost, "/api/v1/remote/invitations", `{"invitee":"reviewer@example.com","session_id":"s1","role":"review","duration_hours":1}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var invitation remote.HostedInvitation
+	if err = json.Unmarshal(created.Body.Bytes(), &invitation); err != nil || invitation.ID == "" || invitation.AcceptURL == "" {
+		t.Fatalf("invitation=%+v err=%v body=%s", invitation, err, created.Body.String())
+	}
+	listed := call(http.MethodGet, "/api/v1/remote/invitations", "")
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), invitation.ID) {
+		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	revoked := call(http.MethodPost, "/api/v1/remote/invitations/revoke", `{"invitation_id":"`+invitation.ID+`"}`)
+	if revoked.Code != http.StatusOK || !strings.Contains(revoked.Body.String(), `"revoked":true`) {
+		t.Fatalf("revoke status=%d body=%s", revoked.Code, revoked.Body.String())
+	}
+
+	unconfigured := HandlerWithHostedInvites(testStore(t), manager, identity, nil)
+	for _, path := range []string{"/api/v1/remote/invitations", "/api/v1/remote/invitations/revoke"} {
+		recorder := httptest.NewRecorder()
+		unconfigured.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusServiceUnavailable && recorder.Code != http.StatusNotFound {
+			t.Fatalf("unconfigured %s status=%d", path, recorder.Code)
 		}
 	}
 }

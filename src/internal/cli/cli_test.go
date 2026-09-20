@@ -13,11 +13,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	bridgeapp "github.com/LanceSandino/sessionsift/src/internal/bridge"
 	"github.com/LanceSandino/sessionsift/src/internal/config"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
+	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
 
@@ -91,6 +94,182 @@ func TestListenAddressRemainsLocalhostOnly(t *testing.T) {
 	if localAddress(listenAddress()) != "127.0.0.1:7788" {
 		t.Fatal("wildcard listener was not converted to a loopback client address")
 	}
+}
+
+func TestHostedAgentEnrollmentShareStatusAndRevoke(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("SESSIONSIFT_HOME", filepath.Join(state, "local"))
+	bridgeStore, err := bridgeapp.Open(filepath.Join(state, "bridge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeStore.Close()
+	handler := bridgeapp.NewHandler(bridgeStore, nil, "")
+	client := &http.Client{Transport: cliRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Result(), nil
+	})}
+	previousClient := hostedHTTPClient
+	hostedHTTPClient = client
+	t.Cleanup(func() { hostedHTTPClient = previousClient })
+
+	enrollment, err := bridgeStore.CreateEnrollment("owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"agent", "enroll", "http://localhost", enrollment.Code, "Test Mac"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Connected device_") {
+		t.Fatalf("enroll code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"agent", "status"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Owner: owner@example.com") {
+		t.Fatalf("status code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"agent", "share", "reviewer@example.com", "7"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "reviewer@example.com") {
+		t.Fatalf("share code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"agent", "revoke", "reviewer@example.com"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Revoked") {
+		t.Fatalf("revoke code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	if code := Run(context.Background(), []string{"agent", "share", "reviewer@example.com", "31"}, strings.NewReader(""), &out, &errOut); code != 2 {
+		t.Fatalf("invalid duration code=%d", code)
+	}
+	if code := Run(context.Background(), []string{"agent"}, strings.NewReader(""), &out, &errOut); code != 2 {
+		t.Fatalf("missing subcommand code=%d", code)
+	}
+}
+
+func TestBridgeCommandRequiresAccessConfigurationAndValidatesAddress(t *testing.T) {
+	t.Setenv("SESSIONSIFT_BRIDGE_HOME", t.TempDir())
+	t.Setenv("SESSIONSIFT_ACCESS_ISSUER", "")
+	t.Setenv("SESSIONSIFT_ACCESS_AUD", "")
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"bridge"}, strings.NewReader(""), &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "requires SESSIONSIFT_ACCESS_ISSUER") {
+		t.Fatalf("bridge code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	t.Setenv("SESSIONSIFT_ACCESS_ISSUER", "https://access.example.com")
+	t.Setenv("SESSIONSIFT_ACCESS_AUD", "audience")
+	t.Setenv("SESSIONSIFT_PUBLIC_URL", "")
+	oldListen := listenTCP
+	listenTCP = func(string, string) (net.Listener, error) { return nil, errors.New("bridge bind failed") }
+	t.Cleanup(func() { listenTCP = oldListen })
+	out.Reset()
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"bridge"}, strings.NewReader(""), &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "bridge bind failed") {
+		t.Fatalf("bridge bind code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	t.Setenv("SESSIONSIFT_BRIDGE_ADDR", "10.0.0.1:9999")
+	if bridgeAddress() != "127.0.0.1:7780" {
+		t.Fatal("unsafe bridge bind was accepted")
+	}
+	t.Setenv("SESSIONSIFT_BRIDGE_ADDR", "127.0.0.1:7780")
+	if bridgeAddress() != "127.0.0.1:7780" {
+		t.Fatal("loopback bridge bind was rejected")
+	}
+}
+
+func TestBridgeCommandStartsAndStopsOnCancelledContext(t *testing.T) {
+	t.Setenv("SESSIONSIFT_BRIDGE_HOME", t.TempDir())
+	t.Setenv("SESSIONSIFT_ACCESS_ISSUER", "https://access.example.com")
+	t.Setenv("SESSIONSIFT_ACCESS_AUD", "audience")
+	t.Setenv("SESSIONSIFT_PUBLIC_URL", "https://sessionsift.example")
+	oldListen := listenTCP
+	listener := &blockingListener{closed: make(chan struct{})}
+	listenTCP = func(string, string) (net.Listener, error) { return listener, nil }
+	t.Cleanup(func() { listenTCP = oldListen })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, errOut bytes.Buffer
+	if code := Run(ctx, []string{"bridge"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "bridge is running") {
+		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+}
+
+func TestLocalAgentStartsLoopbackWithOutboundBridgeConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SESSIONSIFT_HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "empty-codex"))
+	t.Setenv("SESSIONSIFT_ADDR", "127.0.0.1:7777")
+	paths, _ := config.Resolve()
+	if err := remote.SaveHostedConfig(paths.HostedBridge, remote.HostedConfig{URL: "https://sessionsift.example", DeviceID: "device_test", Owner: "owner@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	oldListen := listenTCP
+	listener := &blockingListener{closed: make(chan struct{})}
+	listenTCP = func(string, string) (net.Listener, error) { return listener, nil }
+	t.Cleanup(func() { listenTCP = oldListen })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, errOut lockedBuffer
+	if code := Run(ctx, []string{"start"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Outbound bridge connected") || !strings.Contains(out.String(), "127.0.0.1:7777") {
+		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+}
+
+func TestHostedAgentCommandUsageAndUnenrolledStatus(t *testing.T) {
+	t.Setenv("SESSIONSIFT_HOME", t.TempDir())
+	cases := []struct {
+		args []string
+		code int
+	}{
+		{[]string{"agent", "status"}, 0},
+		{[]string{"agent", "enroll"}, 2},
+		{[]string{"agent", "share"}, 2},
+		{[]string{"agent", "share", "person@example.com"}, 1},
+		{[]string{"agent", "revoke"}, 2},
+		{[]string{"agent", "revoke", "person@example.com"}, 1},
+		{[]string{"agent", "unknown"}, 2},
+	}
+	for _, test := range cases {
+		var out, errOut bytes.Buffer
+		if code := Run(context.Background(), test.args, strings.NewReader(""), &out, &errOut); code != test.code {
+			t.Fatalf("args=%v code=%d want=%d out=%s err=%s", test.args, code, test.code, out.String(), errOut.String())
+		}
+	}
+}
+
+type blockingListener struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (listener *blockingListener) Accept() (net.Conn, error) {
+	<-listener.closed
+	return nil, net.ErrClosed
+}
+func (listener *blockingListener) Close() error {
+	listener.once.Do(func() { close(listener.closed) })
+	return nil
+}
+func (listener *blockingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4zero, Port: 7780} }
+
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *lockedBuffer) Write(value []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Write(value)
+}
+
+func (buffer *lockedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.String()
+}
+
+type cliRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function cliRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
 
 func TestDockerTunnelListenerRejectsNonLocalNetworkClients(t *testing.T) {

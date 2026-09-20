@@ -3,12 +3,59 @@ package remote
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
 
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 )
+
+func TestInvitePrincipalGrantIsBoundToOneSession(t *testing.T) {
+	manager, err := OpenManager(filepath.Join(t.TempDir(), "remote-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	grant, err := manager.ApproveInvitePrincipal(
+		"invite_1",
+		"Reviewer@Example.com",
+		"session-a",
+		"comment",
+		expiresAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.InviteID != "invite_1" || grant.Role != "comment" || len(grant.SessionIDs) != 1 || grant.SessionIDs[0] != "session-a" {
+		t.Fatalf("grant=%+v", grant)
+	}
+
+	request := func(operation protocol.Operation, arguments any) protocol.Request {
+		encoded, marshalErr := json.Marshal(arguments)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return protocol.Request{Version: protocol.Version, RequestID: "req_invite", Operation: operation, Arguments: encoded}
+	}
+	if err = manager.AuthorizePrincipalRequest(context.Background(), "reviewer@example.com", request(protocol.SessionGet, map[string]string{"session_id": "session-a"})); err != nil {
+		t.Fatalf("allowed session denied: %v", err)
+	}
+	if err = manager.AuthorizePrincipalRequest(context.Background(), "reviewer@example.com", request(protocol.SessionGet, map[string]string{"session_id": "session-b"})); err == nil {
+		t.Fatal("invite accessed a different session")
+	}
+	if err = manager.AuthorizePrincipalRequest(context.Background(), "reviewer@example.com", request(protocol.SessionList, nil)); err == nil {
+		t.Fatal("invite listed sessions")
+	}
+	if err = manager.AuthorizePrincipalRequest(context.Background(), "reviewer@example.com", request(protocol.ReviewCreate, map[string]string{"session_id": "session-a"})); err == nil {
+		t.Fatal("comment invite created a review")
+	}
+
+	invites := manager.InviteGrants()
+	if len(invites) != 1 || invites[0].ID != grant.ID {
+		t.Fatalf("invite grants=%+v", invites)
+	}
+}
 
 func TestPairingRequiresClaimAndOwnerApproval(t *testing.T) {
 	manager, err := OpenManager(filepath.Join(t.TempDir(), "remote-state.json"))
@@ -64,7 +111,7 @@ func TestOAuthPrincipalGrantRequiresLocalApprovalAndIsRevocable(t *testing.T) {
 		t.Fatalf("oauth grants=%+v", grants)
 	}
 	authorizer := NewPrincipalAuthorizer(manager, "owner@example.com")
-	if err = authorizer.Authorize(context.Background(), protocol.SessionList); err != nil {
+	if err = authorizer.Authorize(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "req_oauth", Operation: protocol.SessionList}); err != nil {
 		t.Fatalf("principal authorizer: %v", err)
 	}
 	if err = manager.AuthorizePrincipal(context.Background(), "owner@example.com", protocol.SessionGet); err == nil {
@@ -78,6 +125,33 @@ func TestOAuthPrincipalGrantRequiresLocalApprovalAndIsRevocable(t *testing.T) {
 	}
 	if err = manager.AuthorizePrincipal(context.Background(), "owner@example.com", protocol.SessionList); err == nil {
 		t.Fatal("revoked OAuth grant was accepted")
+	}
+}
+
+func TestOAuthPrincipalLookupAndBulkRevocation(t *testing.T) {
+	manager, _ := OpenManager(filepath.Join(t.TempDir(), "remote-state.json"))
+	first, err := manager.ApproveOAuthPrincipal("owner@example.com", []protocol.Operation{protocol.SessionList}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.ApproveOAuthPrincipal("owner@example.com", []protocol.Operation{protocol.SessionMetrics}, 2*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	active, err := manager.GrantForPrincipal("OWNER@example.com")
+	if err != nil || active.ID == first.ID || active.Operations[0] != protocol.SessionMetrics {
+		t.Fatalf("active=%+v first=%+v err=%v", active, first, err)
+	}
+	if err = manager.RevokePrincipal("owner@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.GrantForPrincipal("owner@example.com"); err == nil {
+		t.Fatal("revoked principal remained active")
+	}
+	if err = manager.RevokePrincipal("owner@example.com"); err == nil {
+		t.Fatal("principal was revoked twice")
+	}
+	if err = manager.RevokePrincipal("not-an-email"); err == nil {
+		t.Fatal("invalid principal was accepted")
 	}
 }
 

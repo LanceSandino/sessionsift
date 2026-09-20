@@ -23,6 +23,9 @@ func TestResolveAndEnsurePrivateState(t *testing.T) {
 	if paths.Backups != filepath.Join(home, "backups") {
 		t.Fatalf("backups=%s", paths.Backups)
 	}
+	if paths.HostedBridge != filepath.Join(home, "hosted-bridge.json") {
+		t.Fatalf("hosted bridge config=%s", paths.HostedBridge)
+	}
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}

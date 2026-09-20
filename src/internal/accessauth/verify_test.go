@@ -30,7 +30,7 @@ func TestJWTVerifierValidatesAccessIdentity(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{"keys": []map[string]string{{"kty": "RSA", "kid": "test", "use": "sig", "alg": "RS256", "n": n, "e": e}}})
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: ioBody(string(body)), Request: request}, nil
 	})}
-	verifier, err := NewJWTVerifier(issuer, "audience", client)
+	verifier, err := NewJWTVerifier(issuer, "audience,invite-audience", client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +42,10 @@ func TestJWTVerifierValidatesAccessIdentity(t *testing.T) {
 	bad := signedToken(t, key, map[string]any{"iss": issuer, "aud": []string{"wrong"}, "sub": "subject", "email": "owner@example.com", "exp": time.Now().Add(time.Hour).Unix()})
 	if _, err = verifier.Verify(context.Background(), bad); err == nil {
 		t.Fatal("wrong audience accepted")
+	}
+	inviteToken := signedToken(t, key, map[string]any{"iss": issuer, "aud": []string{"invite-audience"}, "sub": "invitee", "email": "reviewer@example.com", "exp": time.Now().Add(time.Hour).Unix()})
+	if principal, inviteErr := verifier.Verify(context.Background(), inviteToken); inviteErr != nil || principal.Email != "reviewer@example.com" {
+		t.Fatalf("secondary audience principal=%+v err=%v", principal, inviteErr)
 	}
 }
 

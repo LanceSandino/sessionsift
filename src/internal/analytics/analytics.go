@@ -5,6 +5,7 @@ package analytics
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 )
@@ -99,6 +100,7 @@ func Build(sessions []domain.Session) Report {
 		sessions map[string]struct{}
 	}
 	findings := map[string]*findingState{}
+	activeRanges := [][2]time.Time{}
 
 	for _, session := range sessions {
 		if session.Kind == domain.InternalReviewSession {
@@ -107,7 +109,11 @@ func Build(sessions []domain.Session) Report {
 		metrics := domain.CalculateMetrics(session)
 		report.Summary.Sessions++
 		report.Summary.Turns += metrics.TurnCount
-		report.Summary.DurationMS += metrics.DurationMS
+		for _, turn := range session.Turns {
+			if turn.EndedAt.After(turn.StartedAt) {
+				activeRanges = append(activeRanges, [2]time.Time{turn.StartedAt, turn.EndedAt})
+			}
+		}
 		report.Summary.InputTokens += metrics.InputTokens
 		report.Summary.CachedInputTokens += metrics.CachedInputTokens
 		report.Summary.OutputTokens += metrics.OutputTokens
@@ -159,6 +165,7 @@ func Build(sessions []domain.Session) Report {
 			item.sessions[session.ID] = struct{}{}
 		}
 	}
+	report.Summary.DurationMS = mergedDuration(activeRanges)
 	if report.Summary.InputTokens > 0 {
 		report.Summary.CacheRatio = float64(report.Summary.CachedInputTokens) / float64(report.Summary.InputTokens)
 	}
@@ -190,6 +197,27 @@ func Build(sessions []domain.Session) Report {
 	})
 	report.Recommendations = recommend(report)
 	return report
+}
+
+func mergedDuration(ranges [][2]time.Time) int64 {
+	if len(ranges) == 0 {
+		return 0
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i][0].Before(ranges[j][0]) })
+	start, end := ranges[0][0], ranges[0][1]
+	var total time.Duration
+	for _, span := range ranges[1:] {
+		if !span[0].After(end) {
+			if span[1].After(end) {
+				end = span[1]
+			}
+			continue
+		}
+		total += end.Sub(start)
+		start, end = span[0], span[1]
+	}
+	total += end.Sub(start)
+	return total.Milliseconds()
 }
 
 func addBreakdown(values map[string]*Breakdown, name string, metrics domain.Metrics) {

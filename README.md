@@ -27,25 +27,19 @@ Open <http://127.0.0.1:7777>. SessionSift imports both
 Starting the app also watches those directories and refreshes changed sessions
 every three seconds.
 
-When a Cloudflare Tunnel connector runs inside Docker Desktop and routes to
-`host.docker.internal`, start the origin with an explicit restricted tunnel
-listener:
-
-```bash
-SESSIONSIFT_ADDR=0.0.0.0:7777 \
-SESSIONSIFT_ALLOW_DOCKER_TUNNEL=true \
-SESSIONSIFT_ALLOWED_ORIGINS=https://sessionsift.example.com \
-./dist/sessionsift start
-```
-
-This opt-in mode accepts Docker Desktop's loopback-forwarded requests but
-rejects direct non-loopback network clients. Without the explicit flag,
-SessionSift continues to fall back to `127.0.0.1:7777`.
+Do not route a public tunnel to this port. Public deployments run the separate
+connection bridge on port 7780; the Local Agent stays on loopback and polls the
+bridge outbound.
 
 The main commands are:
 
 ```text
 sessionsift start
+sessionsift bridge
+sessionsift agent enroll <bridge-url> <code> [device-name]
+sessionsift agent share <email> [days]
+sessionsift agent revoke <email>
+sessionsift agent status
 sessionsift stop
 sessionsift status
 sessionsift backup
@@ -103,23 +97,20 @@ clients.
 
 ## Remote review and collaboration
 
-The **Remote access** screen creates a ten-minute pairing code, shows requested
-capabilities, and requires an explicit Allow or Deny decision. Approved grants
-are short-lived and operation-scoped. Disconnecting a reviewer also revokes the
-grant. The **Reviewer portal** accepts a pairing code and, after approval, keeps
-the pasted grant in memory while loading only approved session operations.
+The hosted connection console at `/` creates a ten-minute, single-use device
+enrollment code. The device owner grants or revokes an exact email locally with
+`sessionsift agent share` and `sessionsift agent revoke`; grants are short-lived,
+read-only, and operation-scoped.
 
 Annotations and review outcomes are redacted, capability-scoped collaboration
 records. The provider-neutral bridge uses outbound polling and signed device
 responses, so a deployment does not expose the workstation or provider
-credentials. See [remote architecture](docs/remote-architecture.md). A public
-deployment still needs operator-supplied TLS, durable shared bridge state, and
-an explicit `SESSIONSIFT_ALLOWED_ORIGINS` allowlist.
+credentials. See [remote architecture](docs/remote-architecture.md). The bundled
+bridge persists its queue and registry in a private SQLite database.
 
-Two remote MCP paths are available. `/remote/v1/mcp` retains scoped bearer
-grants and legacy MCP `2025-11-25` for header-capable clients. `/mcp` uses the
-official MCP SDK, current protocol negotiation, Cloudflare Access signed
-identity, and a separate locally approved email grant for ChatGPT. Google can
+The public `/mcp` path uses the official MCP SDK, current protocol negotiation,
+Cloudflare Access signed identity, and a separate locally approved email grant
+for ChatGPT. Google can
 remain the upstream Access login provider while Cloudflare Managed OAuth
 supplies OAuth discovery, registration, consent, and refresh tokens. See the
 [deployment guide](docs/deployment.md) for the required routes and settings.
@@ -179,8 +170,8 @@ classified as internal reviews and hidden from normal session lists. Enable the
 - Tool payload previews and timelines are bounded; malformed or unknown Codex
   and ChatGPT records become safe metadata and parser warnings instead of
   breaking the import.
-- SessionSift does not read `~/.codex/auth.json`, upload data, or create cloud
-  accounts.
+- SessionSift does not read `~/.codex/auth.json` or upload the local database.
+  Only redacted responses to explicitly granted typed requests cross the bridge.
 - Remote features are inert until the owner creates and approves a pairing;
   grants are hashed or identity-bound at rest, expire, are rate-limited,
   audited, and revocable.

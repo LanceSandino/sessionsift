@@ -132,15 +132,15 @@ func NewPrincipalAuthorizer(manager *Manager, principal string) PrincipalAuthori
 	return PrincipalAuthorizer{manager: manager, principal: principal}
 }
 
-func (authorizer PrincipalAuthorizer) Authorize(ctx context.Context, operation protocol.Operation) error {
-	return authorizer.manager.AuthorizePrincipal(ctx, authorizer.principal, operation)
+func (authorizer PrincipalAuthorizer) Authorize(ctx context.Context, request protocol.Request) error {
+	return authorizer.manager.AuthorizePrincipalRequest(ctx, authorizer.principal, request)
 }
 
 func NewGrantAuthorizer(manager *Manager, token string) GrantAuthorizer {
 	return GrantAuthorizer{manager: manager, token: token}
 }
-func (a GrantAuthorizer) Authorize(ctx context.Context, operation protocol.Operation) error {
-	return a.manager.Authorize(ctx, a.token, operation)
+func (a GrantAuthorizer) Authorize(ctx context.Context, request protocol.Request) error {
+	return a.manager.Authorize(ctx, a.token, request.Operation)
 }
 func (a *Agent) ServeNext(ctx context.Context, relay *Relay) (bool, error) {
 	task, ok := relay.Next(a.identity.ID)

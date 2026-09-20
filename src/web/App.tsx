@@ -1,5 +1,6 @@
 /** @module App @description Loads local sessions and orchestrates the profiler screens. */
 import React,{useEffect,useState} from "react";
+import "./rich-content.css";
 import {api} from "./api";
 import {Analytics} from "./components/Analytics";
 import {Compare} from "./components/Compare";
@@ -11,6 +12,7 @@ import {SessionList} from "./components/SessionList";
 import {Sidebar,type View} from "./components/Sidebar";
 import {pushRoute,readRoute} from "./navigation";
 import type {AnalyticsReport,Session} from "./types";
+import {sessionRevision} from "./sessionRevision";
 import "./styles.css";
 import "./responsive.css";
 import "./timeline.css";
@@ -24,9 +26,12 @@ export function App(){
   const[analytics,setAnalytics]=useState<AnalyticsReport>();
   const[view,setView]=useState<View>(initial.view);
   const[error,setError]=useState("");
+  const selectedSummary=sessions.find(item=>item.id===selected);
+  const selectedRevision=sessionRevision(selectedSummary);
   useEffect(()=>{const onPop=()=>{const route=readRoute();setView(route.view);if(route.sessionId)setSelected(route.sessionId)};window.addEventListener("popstate",onPop);return()=>window.removeEventListener("popstate",onPop)},[]);
-  useEffect(()=>{let active=true;const refresh=()=>api.sessions(true).then(items=>{if(!active)return;setSessions(items);setSelected(value=>value||items.find(item=>item.session_kind!=="internal_review")?.id||items[0]?.id||"");setError("")}).catch(err=>active&&setError(String(err)));refresh();const timer=window.setInterval(refresh,3000);return()=>{active=false;window.clearInterval(timer)}},[]);
-  useEffect(()=>{if(!selected)return;let active=true;const refresh=()=>api.session(selected).then(session=>{if(active)setDetail({...session,metrics:sessions.find(item=>item.id===selected)?.metrics})}).catch(err=>active&&setError(String(err)));refresh();const timer=window.setInterval(refresh,3000);return()=>{active=false;window.clearInterval(timer)}},[selected,sessions]);
+  useEffect(()=>{let active=true;let timer=0;const refresh=()=>api.sessions(true).then(items=>{if(!active)return;setSessions(items);setSelected(value=>value||items.find(item=>item.session_kind!=="internal_review")?.id||items[0]?.id||"");setError("")}).catch(err=>active&&setError(String(err))).finally(()=>{if(active)timer=window.setTimeout(refresh,5000)});refresh();return()=>{active=false;window.clearTimeout(timer)}},[]);
+  useEffect(()=>{setDetail(undefined)},[selected]);
+  useEffect(()=>{if(!selected)return;let active=true;api.session(selected).then(session=>{if(active){setDetail(session);setError("")}}).catch(err=>active&&setError(String(err)));return()=>{active=false}},[selected,selectedRevision]);
   useEffect(()=>{if(view!=="analytics")return;let active=true;api.analytics().then(value=>{if(active){setAnalytics(value);setError("")}}).catch(err=>active&&setError(String(err)));return()=>{active=false}},[view]);
   const selectSession=(id:string)=>{setSelected(id);setView("sessions");pushRoute({view:"sessions",sessionId:id})};
   const changeView=(next:View)=>{setView(next);pushRoute({view:next,sessionId:next==="sessions"?selected:undefined})};

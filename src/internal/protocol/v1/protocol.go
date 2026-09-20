@@ -84,6 +84,32 @@ func Definitions() []Definition {
 	return values
 }
 
+// ReadOperations is the complete non-mutating capability set exposed through
+// the hosted MCP and browser connection surfaces.
+func ReadOperations() []Operation {
+	return []Operation{
+		SessionList, SessionGet, SessionMetrics, SessionTimeline, SessionFindings,
+		SessionCompare, TurnGet, AnalysisPatterns, AnalysisCorrections,
+		ContextRecommendations,
+	}
+}
+
+// InvitationOperations returns the exact, deliberately narrow capability set
+// assigned to a hosted single-session invitation role.
+func InvitationOperations(role string) ([]Operation, bool) {
+	view := []Operation{SessionGet, SessionMetrics, SessionTimeline, SessionFindings, TurnGet}
+	switch role {
+	case "view":
+		return view, true
+	case "comment":
+		return append(view, AnnotationList, AnnotationCreate), true
+	case "review":
+		return append(view, AnnotationList, AnnotationCreate, ReviewList, ReviewCreate), true
+	default:
+		return nil, false
+	}
+}
+
 type Request struct {
 	Version   int             `json:"version"`
 	RequestID string          `json:"request_id"`

@@ -10,6 +10,11 @@
   --text-strong: #f3f7ff;
   --text-soft: #9aa9c1;
   --shadow-panel: 0 22px 64px rgb(1 4 12 / 34%);
+  --sift-navy: #0f2747;
+  --sift-teal: #08b6c4;
+  --sift-cyan: #7dd3ec;
+  --sift-slate: #64748b;
+  --sift-mist: #eaf2f8;
 }
 
 html,
@@ -98,11 +103,24 @@ select:focus-visible {
   place-items: center;
   width: 32px;
   height: 32px;
-  border: 1px solid #405687;
+  padding: 5px;
+  border: 1px solid #45617d;
   border-radius: 11px;
-  background: linear-gradient(145deg, #263a67, #17243e);
+  background: var(--sift-mist);
   box-shadow: 0 8px 22px rgb(24 43 85 / 45%);
 }
+
+.brandMark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.siftLayerTop { fill: var(--sift-navy); }
+.siftLayerMiddle { fill: var(--sift-teal); }
+.siftLayerLower { fill: var(--sift-cyan); }
+
+.brand b > span { color: var(--sift-teal); }
 
 .brand b {
   align-self: end;
@@ -607,7 +625,14 @@ select:focus-visible {
   background: transparent;
 }
 
-.workspaceExpandButton {
+.workspaceActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.workspaceExpandButton,
+.workspaceModeButton {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -624,18 +649,22 @@ select:focus-visible {
 }
 
 .workspaceExpandButton:hover,
-.workspaceExpandButton[aria-pressed="true"] {
+.workspaceExpandButton[aria-pressed="true"],
+.workspaceModeButton:hover,
+.workspaceModeButton[aria-pressed="true"] {
   border-color: #6f8fe5;
   background: #203255;
   color: #f1f5ff;
 }
 
-.workspaceExpandButton span {
+.workspaceExpandButton span,
+.workspaceModeButton span {
   color: #91a9f5;
   font-size: 14px;
 }
 
-.workspaceExpandButton b {
+.workspaceExpandButton b,
+.workspaceModeButton b {
   font-size: 9px;
 }
 
@@ -678,6 +707,35 @@ select:focus-visible {
 .sessionTabPanel > .card,
 .sessionTabPanel > .sessionSplitPanel {
   min-height: 0;
+}
+
+.controlCenterGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+  gap: 9px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.controlCenterPane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.controlCenterPane > .card,
+.controlCenterPane > .sessionSplitPanel,
+.controlCenterPane > .overviewScroll {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.controlCenterPane .sessionSplitPanel {
+  grid-template-columns: 1fr;
 }
 
 .sectionTitle {
@@ -796,7 +854,7 @@ select:focus-visible {
 }
 
 .chatBubble {
-  max-width: min(76%, 760px);
+  max-width: 92%;
   border-radius: 16px 16px 5px 16px;
 }
 
@@ -921,7 +979,8 @@ select:focus-visible {
 .diagnostics,
 .analyticsView,
 .remoteView {
-  width: min(100%, 1480px);
+  width: 100%;
+  max-width: none;
   min-height: 100%;
   margin: 0 auto;
   padding: clamp(18px, 2.4vw, 30px);
@@ -963,6 +1022,33 @@ select:focus-visible {
 
 *::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(180deg, #85a2e3, #536da0);
+}
+
+@media (max-width: 1099px) {
+  .workspaceModeButton {
+    display: none;
+  }
+
+  .sessionWorkspace.split .controlCenterGrid {
+    display: block;
+  }
+
+  .sessionWorkspace.split .controlCenterPrimary {
+    display: none;
+  }
+
+  .sessionWorkspace.split[data-active="conversation"] .controlCenterPrimary {
+    display: block;
+    height: 100%;
+  }
+
+  .sessionWorkspace.split[data-active="conversation"] .controlCenterSecondary {
+    display: none;
+  }
+
+  .sessionWorkspace.split .controlCenterSecondary {
+    height: 100%;
+  }
 }
 
 @media (max-width: 1279px) {
@@ -1021,6 +1107,15 @@ select:focus-visible {
 
   .metricGrid .metric {
     min-width: 0;
+  }
+
+  .inviteForm {
+    grid-template-columns: minmax(180px, 1fr) minmax(105px, .45fr) minmax(105px, .45fr);
+  }
+
+  .inviteForm .primaryButton {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 
   .sessionTabs {

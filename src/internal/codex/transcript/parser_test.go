@@ -69,6 +69,57 @@ func TestParserNormalizesOutputsCompactionAndUsageRecord(t *testing.T) {
 	}
 }
 
+func TestParserTracksActiveEndModelChangesAndObservedUsage(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"settings","cwd":"/tmp/repo"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"turn_id":"one","model":"gpt-5.6-sol","effort":"high"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":84,"window_minutes":10080,"resets_at":1768000000}}}}`,
+		`{"timestamp":"2026-01-01T00:00:05Z","type":"event_msg","payload":{"type":"task_complete"}}`,
+		`{"timestamp":"2026-01-01T00:01:00Z","type":"turn_context","payload":{"turn_id":"two","model":"gpt-6-astra","effort":"low"}}`,
+		`{"timestamp":"2026-01-01T00:01:01Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":94,"window_minutes":10080,"resets_at":1768000010}}}}`,
+		`{"timestamp":"2026-01-01T00:01:10Z","type":"event_msg","payload":{"type":"task_complete"}}`,
+		`{"timestamp":"2026-01-01T04:00:00Z","type":"event_msg","payload":{"type":"thread_settings_applied"}}`,
+	}, "\n")
+	session, err := New().Parse(strings.NewReader(input), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := session.EndedAt.Format(time.RFC3339); got != "2026-01-01T00:01:10Z" {
+		t.Fatalf("settings extended end to %s", got)
+	}
+	if session.Turns[1].Model != "gpt-6-astra" || session.Turns[1].ReasoningEffort != "low" {
+		t.Fatalf("turn settings=%+v", session.Turns[1])
+	}
+	if session.Turns[1].RateLimitUsedStart == nil || *session.Turns[1].RateLimitUsedStart != 84 || session.Turns[1].RateLimitUsedEnd == nil || *session.Turns[1].RateLimitUsedEnd != 94 {
+		t.Fatalf("usage=%+v", session.Turns[1])
+	}
+	metrics := domain.CalculateMetrics(session)
+	if metrics.DurationMS != 14000 || metrics.ElapsedDurationMS != 70000 || metrics.UsageDeltaPercent != 10 {
+		t.Fatalf("metrics=%+v", metrics)
+	}
+}
+
+func TestParserRestartsUsageBaselineOnlyWhenMeterDecreases(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"reset","cwd":"/tmp/repo"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"turn_id":"one"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":90,"window_minutes":10080,"resets_at":1768000000}}}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"task_complete"}}`,
+		`{"timestamp":"2026-01-01T00:01:00Z","type":"turn_context","payload":{"turn_id":"two"}}`,
+		`{"timestamp":"2026-01-01T00:01:01Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":2,"window_minutes":10080,"resets_at":1769000000}}}}`,
+		`{"timestamp":"2026-01-01T00:01:02Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":4,"window_minutes":10080,"resets_at":1769000010}}}}`,
+		`{"timestamp":"2026-01-01T00:01:03Z","type":"event_msg","payload":{"type":"task_complete"}}`,
+	}, "\n")
+	session, err := New().Parse(strings.NewReader(input), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := session.Turns[1]
+	if turn.RateLimitUsedStart == nil || *turn.RateLimitUsedStart != 2 || turn.RateLimitUsedEnd == nil || *turn.RateLimitUsedEnd != 4 {
+		t.Fatalf("reset usage=%+v", turn)
+	}
+}
+
 func TestParserExpandsOrchestratedToolsAndMCPServers(t *testing.T) {
 	input := strings.Join([]string{
 		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"nested","cwd":"/tmp/repo"}}`,

@@ -68,14 +68,14 @@ describe("App",()=>{
     await waitFor(()=>expect(window.location.pathname).toBe("/sessions/s1"));
   });
 
-  it("keeps a visible loading surface when session detail wins the refresh race",async()=>{
+  it("renders standalone detail even when the library refresh has not completed",async()=>{
     window.history.replaceState({},"","/sessions/s1");
     let releaseSessions:(value:Response)=>void=()=>{};
     const sessionsResponse=new Promise<Response>(resolve=>{releaseSessions=resolve});
     vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL)=>String(input)==="/api/v1/sessions/s1"?response(detail):sessionsResponse));
     render(<App/>);
     await waitFor(()=>expect(fetch).toHaveBeenCalledWith("/api/v1/sessions/s1",expect.anything()));
-    expect(screen.getByText("Importing local conversations…")).toBeInTheDocument();
+    expect(await screen.findByRole("heading",{name:"Fix authentication middleware"})).toBeInTheDocument();
     releaseSessions(new Response(JSON.stringify([summary]),{status:200,headers:{"Content-Type":"application/json"}}));
     expect(await screen.findByRole("heading",{name:"Fix authentication middleware"})).toBeInTheDocument();
   });

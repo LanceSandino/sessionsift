@@ -14,7 +14,7 @@ const session=(overrides:Partial<Session>={}):Session=>({
   status:"completed",
   archived:false,
   turns:[],tool_calls:[],findings:[],events:[],
-  metrics:{duration_ms:60000,turn_count:1,input_tokens:100,cached_input_tokens:0,output_tokens:10,reasoning_tokens:0,cache_ratio:0,tool_calls:0,builtin_tool_calls:0,mcp_calls:0,app_tool_calls:0,unique_tools:0,unique_mcp_servers:0,failed_tool_calls:0,reads:0,searches:0,edits:0,validations:0,compactions:0,exploration_ratio:0,finding_count:0},
+  metrics:{duration_ms:60000,elapsed_duration_ms:60000,usage_delta_percent:0,usage_measured_turns:0,turn_count:1,input_tokens:100,cached_input_tokens:0,output_tokens:10,reasoning_tokens:0,cache_ratio:0,tool_calls:0,builtin_tool_calls:0,mcp_calls:0,app_tool_calls:0,unique_tools:0,unique_mcp_servers:0,failed_tool_calls:0,reads:0,searches:0,edits:0,validations:0,compactions:0,exploration_ratio:0,finding_count:0},
   ...overrides,
 });
 const ids=(sessions:Session[])=>sessions.map(item=>item.id);

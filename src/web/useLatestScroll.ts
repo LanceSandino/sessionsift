@@ -4,7 +4,22 @@ import {useLayoutEffect,type RefObject} from "react";
 export function useLatestScroll(ref:RefObject<HTMLElement|null>,resetKey:string){
   useLayoutEffect(()=>{
     const viewport=ref.current;
-    if(viewport)viewport.scrollTop=viewport.scrollHeight;
+    if(!viewport)return;
+    let pinned=true;
+    let width=viewport.clientWidth,height=viewport.clientHeight;
+    viewport.scrollTop=viewport.scrollHeight;
+    const onScroll=()=>{
+      // A breakpoint or hidden pane is not a user's decision to leave latest.
+      if(viewport.clientWidth!==width||viewport.clientHeight!==height||!height)return;
+      pinned=viewport.scrollHeight-viewport.clientHeight-viewport.scrollTop<4;
+    };
+    const observer=typeof ResizeObserver==="undefined"?undefined:new ResizeObserver(()=>{
+      width=viewport.clientWidth;height=viewport.clientHeight;
+      if(pinned&&height)viewport.scrollTop=viewport.scrollHeight;
+    });
+    observer?.observe(viewport);
+    viewport.addEventListener("scroll",onScroll,{passive:true});
+    return()=>{observer?.disconnect();viewport.removeEventListener("scroll",onScroll)};
   },[ref,resetKey]);
 }
 

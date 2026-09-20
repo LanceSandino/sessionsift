@@ -5,6 +5,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,13 +22,13 @@ type Repository interface {
 }
 
 type Authorizer interface {
-	Authorize(context.Context, protocol.Operation) error
+	Authorize(context.Context, protocol.Request) error
 }
 
 type LocalAuthorizer struct{}
 
-func (LocalAuthorizer) Authorize(_ context.Context, operation protocol.Operation) error {
-	if _, ok := protocol.DefinitionFor(operation); !ok {
+func (LocalAuthorizer) Authorize(_ context.Context, request protocol.Request) error {
+	if _, ok := protocol.DefinitionFor(request.Operation); !ok {
 		return errors.New("operation is not allowlisted")
 	}
 	return nil
@@ -111,7 +112,7 @@ func (s *Service) Execute(ctx context.Context, request protocol.Request) protoco
 	if s.repository == nil || s.authorizer == nil {
 		return fail(response, protocol.StatusError, "unavailable", errors.New("local agent is not configured"))
 	}
-	if err := s.authorizer.Authorize(ctx, request.Operation); err != nil {
+	if err := s.authorizer.Authorize(ctx, request); err != nil {
 		return fail(response, protocol.StatusDenied, "denied", err)
 	}
 	definition, _ := protocol.DefinitionFor(request.Operation)
@@ -271,7 +272,10 @@ func (s *Service) list(ctx context.Context, arguments ListArguments) (any, proto
 func (s *Service) session(ctx context.Context, id string) (domain.Session, protocol.Status, error) {
 	session, err := s.repository.GetSession(ctx, id)
 	if err != nil {
-		return domain.Session{}, protocol.StatusNotFound, errors.New("session not found")
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Session{}, protocol.StatusNotFound, errors.New("session not found")
+		}
+		return domain.Session{}, protocol.StatusError, errors.New("session storage unavailable or busy; retry the request")
 	}
 	return session, protocol.StatusOK, nil
 }

@@ -1,8 +1,9 @@
 # Deployment and recovery
 
 SessionSift remains a local-authority service even when Cloudflare publishes
-it. The origin stores the database, remote grants, audit metadata, and backups;
-Cloudflare Access authenticates public users and terminates TLS.
+the hosted connection bridge. The Local Agent stores the session database,
+local grants, audit metadata, and backups on the private device; Cloudflare
+Access authenticates public users and terminates TLS in front of the bridge.
 
 ## Required public routes
 
@@ -13,6 +14,8 @@ hostname.
 | --- | --- | --- |
 | `/` and application routes | Human UI and JSON API | Existing Google Access login |
 | `/mcp` | Current Streamable HTTP MCP for ChatGPT | Cloudflare Managed OAuth plus a local identity grant |
+| `/agent/*` | Signed outbound Local Agent relay | Access Bypass; origin verifies enrollment code or Ed25519 signature |
+| `/invite/*` | Email-bound, single-session reviewer portal | Separate Google Access application; origin rechecks the exact invited email and invite session |
 | `/.well-known/oauth-protected-resource` | RFC 9728 resource discovery | Publicly discoverable/Managed OAuth |
 | `/healthz` | Process liveness | Private or service-token policy |
 | `/readyz` | SQLite integrity/readiness | Private or service-token policy |
@@ -26,19 +29,80 @@ Access service token bypasses Access for automation but cannot configure
 Managed OAuth; configuration requires dashboard access or an API token with
 Access Apps and Policies write permission.
 
+Create a separate, more-specific self-hosted Access application for
+`bridge.example.com/invite/*`. Its Allow policy should require the
+Google login method; do not add a Bypass or Service Auth policy to this path.
+Cloudflare assigns that path application a different audience from the main
+application, so `SESSIONSIFT_ACCESS_AUD` must contain both exact audience tags,
+comma-separated, **main application first, invitation application second**.
+The main account/API/MCP routes require the verified main audience. Invitation
+routes accept the configured allowlist and still require the verified Access
+email to match the invitation exactly. Invitation-only Google login must never
+confer main-account privileges. `/invite/assets/*` contains only compiled static
+UI assets, no identity or session data.
+
+The existing deployment already has Managed OAuth enabled; do not recreate its
+clients or rotate credentials as part of routine upgrades. Google remains the
+upstream login. The main app remains email-allowlisted for the private beta.
+
+An owner creates an invitation for one session, one normalized email, one role,
+and an expiry of at most 30 days. The acceptance code is single-use and stored
+only as a hash. Successful acceptance replaces it with a random per-invitation
+cookie token, also stored only as a hash. Revocation invalidates both the bridge
+cookie and the workstation grant immediately. Invitees never receive session
+listing, comparison, analytics, filesystem, process, shell, repository, or
+generic SQL access.
+
+The bridge treats the edge as untrusted input. Every human, JSON API, and MCP
+route passes through one fail-closed origin gate before any private lookup. The
+gate requires a non-empty Access assertion and validates its signature, exact
+issuer, application audience, expiry, subject, and normalized email. Missing,
+forged, expired, or incomplete assertions receive `401` and cannot enqueue a
+session request. `/agent/*` is a separate device boundary: enrollment requires a
+single-use 120-bit code, while every other request requires a body-bound
+Ed25519 signature.
+
+## Tenant and encryption boundary
+
+Every enrollment, device, grant, invitation, relay task, and MCP target is
+scoped to a workspace. The first authenticated visit creates a deterministic
+personal workspace; owners may create additional workspaces and add members in
+the connection control center. Membership does not authorize session reads.
+The Local Agent must still issue an exact, expiring principal grant. If a
+principal has multiple eligible devices, MCP refuses the request until the
+principal selects an explicit workspace/device target in `/`.
+
+Relay request and response payloads are envelope-encrypted before SQLite sees
+them. Each payload has a random 256-bit data key; AES-256-GCM authenticates both
+the payload and the KEK-wrapped data key. Set `SESSIONSIFT_BRIDGE_KEK_FILE` to a
+private 32-byte or base64url-encoded key file. If absent, the single-origin
+bridge creates it with mode `0600`. Back up the database and KEK as separate
+protected artifacts and restore them as a pair. Never place the KEK, Access
+tokens, or `.env.cloudflare` in Git or service logs.
+
+Every request that reaches the origin's canonical `/mcp` endpoint emits one
+structured `mcp_access` event. The event includes the HTTP method and status,
+duration, response size, a sanitized Cloudflare Ray ID (or a generated request
+ID), whether Access identity verification succeeded, and a truncated SHA-256
+principal hash after successful verification. It deliberately excludes Access
+assertions, authorization headers, raw email addresses, query parameters,
+request bodies, tool arguments, and tool results. Use the request ID to
+correlate origin outcomes with Cloudflare logs without copying credentials or
+session content into service logs.
+
 The callback and lifetime checklist is in
 [`deploy/cloudflare/managed-oauth-checklist.md`](../deploy/cloudflare/managed-oauth-checklist.md).
 
 ## Supervision
 
-Use the launchd template on macOS or the systemd user-service template on
-Linux. Replace paths and load environment values through the service manager;
+Run the Local Agent and hosted bridge as separate supervised services. Use the
+two launchd templates on macOS or the systemd templates on Linux. Replace paths and load environment values through the service manager;
 do not put Access service-token secrets in a unit committed to Git.
 
-SessionSift handles `SIGTERM`, allows three seconds for HTTP shutdown, and uses
+SessionSift handles `SIGTERM`, uses bounded graceful shutdown, and applies
 bounded header/read/write/idle timeouts. The templates restart failed processes
 with a short backoff. Cloudflare Tunnel should be supervised separately and
-route only to port 7777.
+route only to `http://host.docker.internal:7780`. Port 7777 remains loopback-only.
 
 ## Backups and recovery
 
@@ -57,16 +121,29 @@ stop the agent, preserve the failed database, copy one chosen backup to
 manual stop-and-copy operation so the application never overwrites the live
 database automatically.
 
+The hosted bridge database is separate from these Local Agent snapshots. For
+the bridge, stop task intake, copy `bridge.db` with SQLite's backup mechanism,
+and copy the configured KEK as a separate secret. Queued task content is
+transient; drain it before planned KEK replacement because online key rotation
+is not yet supported.
+
 ## Deployment verification
 
 1. `npm test` and `npm run build` pass for the release commit.
 2. `sessionsift backup` succeeds before replacing the binary.
-3. Restart the supervised agent and confirm `/readyz` returns `200` locally.
+3. Restart both supervised services. Confirm the Local Agent `/readyz` returns
+   `200` on loopback and the bridge `/readyz` returns `200` on port 7780.
    Source reconciliation runs in the background after the listener opens, so a
    large active transcript does not hold the port closed during restart.
-4. Confirm the UI, `/mcp`, and protected-resource metadata through Cloudflare.
+4. Confirm the connection console, `/mcp`, and protected-resource metadata through Cloudflare.
+   Confirm the bridge log contains a matching `mcp_access` event with no request
+   payload or credential material.
 5. Confirm an unapproved OAuth identity is denied and an approved identity can
    list only the granted read-only tools.
-6. If verification fails, restore the prior binary; the database schema is
+6. Create a short-lived invitation to a controlled email. Confirm the link is
+   single-use, a different Access identity is denied, the portal exposes only
+   the selected session and role operations, and revocation immediately denies
+   the accepted cookie. Remove the test invitation afterward.
+7. If verification fails, restore the prior binary; the database schema is
    forward-compatible in this release, and the pre-deploy backup remains the
    data rollback point.

@@ -1,9 +1,12 @@
 // Package domain defines SessionSift's provider-neutral normalized records.
 package domain
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
-const ParserVersion = "codex-jsonl-v9"
+const ParserVersion = "codex-jsonl-v11"
 
 const ChatGPTExportVersion = "chatgpt-export-v2"
 
@@ -69,20 +72,26 @@ type Session struct {
 
 // Turn contains prompt and token data for one user-driven turn.
 type Turn struct {
-	ID                       string    `json:"id"`
-	SessionID                string    `json:"session_id"`
-	ExternalTurnID           string    `json:"external_turn_id"`
-	Sequence                 int       `json:"sequence"`
-	StartedAt                time.Time `json:"started_at"`
-	EndedAt                  time.Time `json:"ended_at"`
-	UserPromptRedacted       string    `json:"user_prompt_redacted,omitempty"`
-	AssistantSummaryRedacted string    `json:"assistant_summary_redacted,omitempty"`
-	InputTokens              int64     `json:"input_tokens"`
-	CachedInputTokens        int64     `json:"cached_input_tokens"`
-	OutputTokens             int64     `json:"output_tokens"`
-	ReasoningTokens          int64     `json:"reasoning_tokens"`
-	ContextWindow            int64     `json:"context_window"`
-	TokenSource              string    `json:"token_source,omitempty"`
+	ID                       string     `json:"id"`
+	SessionID                string     `json:"session_id"`
+	ExternalTurnID           string     `json:"external_turn_id"`
+	Sequence                 int        `json:"sequence"`
+	StartedAt                time.Time  `json:"started_at"`
+	EndedAt                  time.Time  `json:"ended_at"`
+	UserPromptRedacted       string     `json:"user_prompt_redacted,omitempty"`
+	AssistantSummaryRedacted string     `json:"assistant_summary_redacted,omitempty"`
+	InputTokens              int64      `json:"input_tokens"`
+	CachedInputTokens        int64      `json:"cached_input_tokens"`
+	OutputTokens             int64      `json:"output_tokens"`
+	ReasoningTokens          int64      `json:"reasoning_tokens"`
+	ContextWindow            int64      `json:"context_window"`
+	TokenSource              string     `json:"token_source,omitempty"`
+	Model                    string     `json:"model,omitempty"`
+	ReasoningEffort          string     `json:"reasoning_effort,omitempty"`
+	RateLimitUsedStart       *float64   `json:"rate_limit_used_start,omitempty"`
+	RateLimitUsedEnd         *float64   `json:"rate_limit_used_end,omitempty"`
+	RateLimitWindowMinutes   int        `json:"rate_limit_window_minutes,omitempty"`
+	RateLimitResetsAt        *time.Time `json:"rate_limit_resets_at,omitempty"`
 }
 
 // Event preserves a redacted, provider-neutral timeline record.
@@ -139,6 +148,9 @@ type Finding struct {
 // Metrics contains observable per-session aggregates.
 type Metrics struct {
 	DurationMS              int64   `json:"duration_ms"`
+	ElapsedDurationMS       int64   `json:"elapsed_duration_ms"`
+	UsageDeltaPercent       float64 `json:"usage_delta_percent"`
+	UsageMeasuredTurns      int     `json:"usage_measured_turns"`
 	TurnCount               int     `json:"turn_count"`
 	InputTokens             int64   `json:"input_tokens"`
 	CachedInputTokens       int64   `json:"cached_input_tokens"`
@@ -168,15 +180,24 @@ func CalculateMetrics(s Session) Metrics {
 	m := Metrics{TurnCount: len(s.Turns), ToolCalls: len(s.ToolCalls), FindingCount: len(s.Findings)}
 	tools := map[string]struct{}{}
 	mcpServers := map[string]struct{}{}
-	if !s.EndedAt.IsZero() && !s.StartedAt.IsZero() {
-		m.DurationMS = s.EndedAt.Sub(s.StartedAt).Milliseconds()
+	if !s.EndedAt.IsZero() && !s.StartedAt.IsZero() && s.EndedAt.After(s.StartedAt) {
+		m.ElapsedDurationMS = s.EndedAt.Sub(s.StartedAt).Milliseconds()
 	}
+	activeRanges := make([][2]time.Time, 0, len(s.Turns))
 	for _, turn := range s.Turns {
+		if !turn.StartedAt.IsZero() && !turn.EndedAt.IsZero() && turn.EndedAt.After(turn.StartedAt) {
+			activeRanges = append(activeRanges, [2]time.Time{turn.StartedAt, turn.EndedAt})
+		}
+		if turn.RateLimitUsedStart != nil && turn.RateLimitUsedEnd != nil && *turn.RateLimitUsedEnd >= *turn.RateLimitUsedStart {
+			m.UsageDeltaPercent += *turn.RateLimitUsedEnd - *turn.RateLimitUsedStart
+			m.UsageMeasuredTurns++
+		}
 		m.InputTokens += turn.InputTokens
 		m.CachedInputTokens += turn.CachedInputTokens
 		m.OutputTokens += turn.OutputTokens
 		m.ReasoningTokens += turn.ReasoningTokens
 	}
+	m.DurationMS = mergedDuration(activeRanges)
 	if m.InputTokens > 0 {
 		m.CacheRatio = float64(m.CachedInputTokens) / float64(m.InputTokens)
 	}
@@ -224,4 +245,26 @@ func CalculateMetrics(s Session) Metrics {
 		m.ExplorationRatio = float64(m.Reads+m.Searches) / float64(m.ToolCalls)
 	}
 	return m
+}
+
+// mergedDuration returns the union of observed turn intervals so overlapping
+// records never inflate active work time.
+func mergedDuration(ranges [][2]time.Time) int64 {
+	if len(ranges) == 0 {
+		return 0
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i][0].Before(ranges[j][0]) })
+	start, end := ranges[0][0], ranges[0][1]
+	var total time.Duration
+	for _, current := range ranges[1:] {
+		if !current[0].After(end) {
+			if current[1].After(end) {
+				end = current[1]
+			}
+			continue
+		}
+		total += end.Sub(start)
+		start, end = current[0], current[1]
+	}
+	return (total + end.Sub(start)).Milliseconds()
 }

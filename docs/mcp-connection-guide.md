@@ -19,22 +19,18 @@ Reconnect the MCP server after SessionSift tools change; clients commonly cache 
 
 ## Remote HTTP clients
 
-The endpoint is `https://YOUR-BRIDGE/remote/v1/mcp`. Send the short-lived grant supplied after owner approval:
+The remote endpoint is `https://YOUR-BRIDGE/mcp`. It uses Streamable HTTP and
+OAuth discovery; do not copy a bearer grant from the device into client
+configuration. The exact signed-in email must first be granted on the private
+device:
 
-```text
-Authorization: Bearer YOUR_SCOPED_GRANT
-MCP-Protocol-Version: 2025-11-25
+```bash
+sessionsift agent share person@example.com
 ```
 
-Codex HTTP configuration:
-
-```toml
-[mcp_servers.sessionsift_remote]
-url = "https://YOUR-BRIDGE/remote/v1/mcp"
-http_headers = { Authorization = "Bearer YOUR_SCOPED_GRANT", MCP-Protocol-Version = "2025-11-25" }
-```
-
-Claude Code, Cursor, VS Code, MCP Inspector, and custom clients can use the same endpoint and headers. SessionSift serves legacy MCP `2025-11-25`, one JSON-RPC message per POST. It does not serve an SSE GET stream.
+OAuth-capable Codex, ChatGPT, Claude, Cursor, VS Code, MCP Inspector, and custom
+clients can use the same endpoint. Cloudflare handles OAuth and the bridge plus
+Local Agent enforce the device-created grant.
 
 ## ChatGPT OAuth MCP
 
@@ -43,8 +39,8 @@ uses current Streamable HTTP MCP through the official Go SDK and requires both:
 
 1. a valid Cloudflare Access `Cf-Access-Jwt-Assertion`, produced through
    Cloudflare Managed OAuth; and
-2. a non-expired local grant for the exact verified email, approved in
-   **Remote access → ChatGPT MCP**.
+2. a non-expired grant for the exact verified email, created on the private
+   device with `sessionsift agent share`.
 
 Protected-resource discovery is available at
 `/.well-known/oauth-protected-resource`. Keep Google as the upstream Access

@@ -1,5 +1,5 @@
 /** @module ApiClient @description Fetches local-only SessionSift JSON resources. */
-import type { AnalyticsReport, ComparePayload, RemoteGrant, RemotePairing, RemoteStatus, Session } from "./types";
+import type { AnalyticsReport, ComparePayload, HostedInvitation, RemoteGrant, RemotePairing, RemoteStatus, Session } from "./types";
 
 async function request<T>(path:string):Promise<T>{
   const response=await fetch(path,{headers:{Accept:"application/json"}});
@@ -10,7 +10,10 @@ async function requestArray<T>(path:string):Promise<T[]>{const value=await reque
 async function send<T>(path:string,body:unknown):Promise<T>{const response=await fetch(path,{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify(body)});if(!response.ok)throw new Error(`Local API returned ${response.status}`);return response.json() as Promise<T>}
 async function remoteSend<T>(path:string,body:unknown,token:string):Promise<T>{const response=await fetch(path,{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify(body)});if(!response.ok)throw new Error(`Remote API returned ${response.status}`);return response.json() as Promise<T>}
 export const api={
-  sessions:(includeInternal=false)=>requestArray<Session>(`/api/v1/sessions${includeInternal?"?include_internal=true":""}`),
+  sessions:async(includeInternal=false)=>{
+    const items:Session[]=[];
+    for(let cursor=0;;cursor+=100){const page=await requestArray<Session>(`/api/v1/sessions?limit=100&cursor=${cursor}&include_internal=${includeInternal}`);items.push(...page);if(page.length<100)return items}
+  },
   session:(id:string)=>request<Session>(`/api/v1/sessions/${encodeURIComponent(id)}`),
   compare:(a:string,b:string)=>request<ComparePayload>(`/api/v1/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
   analytics:()=>request<AnalyticsReport>("/api/v1/analytics"),
@@ -20,6 +23,9 @@ export const api={
   approvePairing:(code:string)=>send<{grant:unknown;token:string}>("/api/v1/remote/pairings/approve",{code,duration_minutes:30}),
   denyPairing:(code:string)=>send("/api/v1/remote/pairings/deny",{code}),
   revokeGrant:(grant_id:string)=>send("/api/v1/remote/grants/revoke",{grant_id}),
+  createInvitation:(value:{invitee:string;session_id:string;role:"view"|"comment"|"review";duration_hours:number})=>send<HostedInvitation>("/api/v1/remote/invitations",value),
+  invitations:()=>requestArray<HostedInvitation>("/api/v1/remote/invitations"),
+  revokeInvitation:(invitation_id:string)=>send("/api/v1/remote/invitations/revoke",{invitation_id}),
   disconnect:(connection_id:string)=>send("/api/v1/remote/connections/disconnect",{connection_id}),
   annotations:(sessionId:string)=>requestArray<import("./types").Annotation>(`/api/v1/remote/annotations?session_id=${encodeURIComponent(sessionId)}`),
   addAnnotation:(value:{session_id:string;turn_id?:string;author:string;body:string})=>send<import("./types").Annotation>("/api/v1/remote/annotations",value),

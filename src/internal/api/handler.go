@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,11 +32,21 @@ func Handler(store *storage.Store) http.Handler {
 // HandlerWithRemote adds opt-in owner and scoped remote routes while retaining localhost authority.
 func HandlerWithRemote(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity) http.Handler {
 	verifier, _ := accessauth.NewFromEnv(nil)
-	return HandlerWithRemoteAccess(store, remoteManager, identity, verifier, strings.TrimRight(os.Getenv("SESSIONSIFT_PUBLIC_URL"), "/"))
+	return handlerWithRemoteAccess(store, remoteManager, identity, verifier, strings.TrimRight(os.Getenv("SESSIONSIFT_PUBLIC_URL"), "/"), nil)
+}
+
+// HandlerWithHostedInvites adds owner-only invitation management backed by the configured bridge.
+func HandlerWithHostedInvites(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, inviter *remote.HostedInviter) http.Handler {
+	verifier, _ := accessauth.NewFromEnv(nil)
+	return handlerWithRemoteAccess(store, remoteManager, identity, verifier, strings.TrimRight(os.Getenv("SESSIONSIFT_PUBLIC_URL"), "/"), inviter)
 }
 
 // HandlerWithRemoteAccess allows production Access verification and deterministic integration tests.
 func HandlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string) http.Handler {
+	return handlerWithRemoteAccess(store, remoteManager, identity, verifier, publicURL, nil)
+}
+
+func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, inviter *remote.HostedInviter) http.Handler {
 	agent := service.NewLocal(store)
 	assets, _ := fs.Sub(webui.Assets, "dist")
 	web := webHandler(assets)
@@ -45,7 +56,7 @@ func HandlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:")
 		switch {
 		case remoteManager != nil && (strings.HasPrefix(r.URL.Path, "/api/v1/remote/") || strings.HasPrefix(r.URL.Path, "/remote/v1/") || r.URL.Path == "/mcp"):
-			remoteRoute(store, remoteManager, identity, verifier, publicURL, w, r)
+			remoteRoute(store, remoteManager, identity, verifier, publicURL, inviter, w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource"):
 			protectedResourceMetadata(publicURL, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
@@ -67,6 +78,10 @@ func HandlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		case r.Method == http.MethodGet && r.URL.Path == "/readyz":
+			if remoteManager != nil && !remoteManager.AuditHealthy() {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "audit_unavailable"})
+				return
+			}
 			readyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
 			if err := store.Health(readyCtx); err != nil {
@@ -140,7 +155,18 @@ func receiveOTel(store *storage.Store, w http.ResponseWriter, r *http.Request) {
 }
 
 func listSessions(agent *service.Service, w http.ResponseWriter, r *http.Request) {
-	data, ok := execute(agent, w, r, protocol.SessionList, service.ListArguments{IncludeInternal: r.URL.Query().Get("include_internal") == "true"})
+	arguments := service.ListArguments{IncludeInternal: r.URL.Query().Get("include_internal") == "true"}
+	for key, target := range map[string]*int{"cursor": &arguments.Cursor, "limit": &arguments.Limit} {
+		if value := r.URL.Query().Get(key); value != "" {
+			number, err := strconv.Atoi(value)
+			if err != nil || number < 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid pagination"})
+				return
+			}
+			*target = number
+		}
+	}
+	data, ok := execute(agent, w, r, protocol.SessionList, arguments)
 	if ok {
 		writeJSON(w, http.StatusOK, data.(service.SessionListResponse).Sessions)
 	}
@@ -156,7 +182,8 @@ func sessionRoute(agent *service.Service, w http.ResponseWriter, r *http.Request
 	if len(parts) == 1 {
 		data, ok := execute(agent, w, r, protocol.SessionGet, service.SessionArguments{SessionID: parts[0]})
 		if ok {
-			writeJSON(w, http.StatusOK, data)
+			session := data.(domain.Session)
+			writeJSON(w, http.StatusOK, service.SessionSummary{Session: session, Metrics: domain.CalculateMetrics(session)})
 		}
 		return
 	}

@@ -17,7 +17,11 @@ import (
 )
 
 // Store wraps the local SQLite database.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db       *sql.DB
+	healthDB *sql.DB
+	readDB   *sql.DB
+}
 
 // Open creates or migrates the database at path.
 func Open(path string) (*Store, error) {
@@ -31,20 +35,54 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("secure database permissions: %w", err)
+	}
+	if path != ":memory:" {
+		store.healthDB, err = sql.Open("sqlite", path)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("open readiness connection: %w", err)
+		}
+		store.healthDB.SetMaxOpenConns(1)
+		store.readDB, err = sql.Open("sqlite", path)
+		if err != nil {
+			store.Close()
+			return nil, fmt.Errorf("open interactive read connection: %w", err)
+		}
+		store.readDB.SetMaxOpenConns(1)
+		if _, err = store.readDB.Exec(`PRAGMA query_only=ON`); err != nil {
+			store.Close()
+			return nil, err
+		}
+	}
 	return store, nil
 }
 
 // Close releases the SQLite connection.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.readDB != nil {
+		_ = s.readDB.Close()
+	}
+	if s.healthDB != nil {
+		_ = s.healthDB.Close()
+	}
+	return s.db.Close()
+}
 
 // Health verifies that the connection is reachable and the SQLite file passes
 // its lightweight integrity check. It is suitable for readiness probes.
 func (s *Store) Health(ctx context.Context) error {
-	if err := s.db.PingContext(ctx); err != nil {
+	db := s.db
+	if s.healthDB != nil {
+		db = s.healthDB
+	}
+	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("database ping: %w", err)
 	}
 	var result string
-	if err := s.db.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&result); err != nil {
+	if err := db.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&result); err != nil {
 		return fmt.Errorf("database quick check: %w", err)
 	}
 	if result != "ok" {
@@ -222,7 +260,7 @@ func (s *Store) SaveImport(ctx context.Context, pathHash, fingerprint string, se
 
 // ListSessions returns newest sessions first with child records intact.
 func (s *Store) ListSessions(ctx context.Context) ([]domain.Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT payload_json FROM sessions ORDER BY started_at DESC`)
+	rows, err := s.reader().QueryContext(ctx, `SELECT payload_json FROM sessions ORDER BY started_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +283,7 @@ func (s *Store) ListSessions(ctx context.Context) ([]domain.Session, error) {
 // GetSession returns one fully normalized session.
 func (s *Store) GetSession(ctx context.Context, id string) (domain.Session, error) {
 	var payload string
-	if err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM sessions WHERE id=?`, id).Scan(&payload); err != nil {
+	if err := s.reader().QueryRowContext(ctx, `SELECT payload_json FROM sessions WHERE id=?`, id).Scan(&payload); err != nil {
 		return domain.Session{}, err
 	}
 	var session domain.Session
@@ -253,6 +291,14 @@ func (s *Store) GetSession(ctx context.Context, id string) (domain.Session, erro
 		return domain.Session{}, err
 	}
 	return session, nil
+}
+
+// WAL readers see committed snapshots while ingestion owns the write connection.
+func (s *Store) reader() *sql.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
 }
 
 // AppendHookEvent stores a redacted live hook event even before transcript reconciliation.

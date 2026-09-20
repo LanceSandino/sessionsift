@@ -8,6 +8,7 @@ export default defineConfig({
   build: {
     outDir: "../webui/dist",
     emptyOutDir: true,
+	rollupOptions:{input:{app:"src/web/index.html",hosted:"src/web/hosted.tsx"}},
   },
   test: {
     environment: "jsdom",
