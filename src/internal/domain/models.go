@@ -1,0 +1,184 @@
+// Package domain defines SessionSift's provider-neutral normalized records.
+package domain
+
+import "time"
+
+const ParserVersion = "codex-jsonl-v5"
+
+// SessionKind distinguishes developer work from Codex-owned supporting agents.
+type SessionKind string
+
+const (
+	DeveloperSession      SessionKind = "developer"
+	InternalReviewSession SessionKind = "internal_review"
+)
+
+// Confidence makes the provenance of a finding explicit in the API and UI.
+type Confidence string
+
+const (
+	Observed Confidence = "observed"
+	Derived  Confidence = "derived"
+	Possible Confidence = "possible"
+)
+
+// Session is a normalized Codex session and its related records.
+type Session struct {
+	ID                string      `json:"id"`
+	ExternalSessionID string      `json:"external_session_id"`
+	Title             string      `json:"title"`
+	Kind              SessionKind `json:"session_kind"`
+	CWD               string      `json:"-"`
+	RepoRootHash      string      `json:"repo_root_hash"`
+	RepoDisplayName   string      `json:"repo_display_name"`
+	GitBranch         string      `json:"git_branch,omitempty"`
+	Model             string      `json:"model,omitempty"`
+	ReasoningEffort   string      `json:"reasoning_effort,omitempty"`
+	StartedAt         time.Time   `json:"started_at"`
+	EndedAt           time.Time   `json:"ended_at"`
+	Status            string      `json:"status"`
+	SourceVersion     string      `json:"source_version,omitempty"`
+	ParserVersion     string      `json:"parser_version"`
+	Archived          bool        `json:"archived"`
+	Warnings          []string    `json:"warnings,omitempty"`
+	Turns             []Turn      `json:"turns,omitempty"`
+	Events            []Event     `json:"events,omitempty"`
+	ToolCalls         []ToolCall  `json:"tool_calls,omitempty"`
+	Findings          []Finding   `json:"findings,omitempty"`
+}
+
+// Turn contains prompt and token data for one user-driven Codex turn.
+type Turn struct {
+	ID                       string    `json:"id"`
+	SessionID                string    `json:"session_id"`
+	ExternalTurnID           string    `json:"external_turn_id"`
+	Sequence                 int       `json:"sequence"`
+	StartedAt                time.Time `json:"started_at"`
+	EndedAt                  time.Time `json:"ended_at"`
+	UserPromptRedacted       string    `json:"user_prompt_redacted,omitempty"`
+	AssistantSummaryRedacted string    `json:"assistant_summary_redacted,omitempty"`
+	InputTokens              int64     `json:"input_tokens"`
+	CachedInputTokens        int64     `json:"cached_input_tokens"`
+	OutputTokens             int64     `json:"output_tokens"`
+	ReasoningTokens          int64     `json:"reasoning_tokens"`
+	ContextWindow            int64     `json:"context_window"`
+	TokenSource              string    `json:"token_source,omitempty"`
+}
+
+// Event preserves a redacted, provider-neutral timeline record.
+type Event struct {
+	ID              string         `json:"id"`
+	SessionID       string         `json:"session_id"`
+	TurnID          string         `json:"turn_id,omitempty"`
+	Timestamp       time.Time      `json:"timestamp"`
+	EventType       string         `json:"event_type"`
+	EventSubtype    string         `json:"event_subtype,omitempty"`
+	Source          string         `json:"source"`
+	PayloadRedacted map[string]any `json:"payload_redacted,omitempty"`
+	DurationMS      int64          `json:"duration_ms,omitempty"`
+	Success         *bool          `json:"success,omitempty"`
+}
+
+// ToolCall describes an observed tool execution without retaining sensitive output.
+type ToolCall struct {
+	ID                    string    `json:"id"`
+	SessionID             string    `json:"session_id"`
+	TurnID                string    `json:"turn_id,omitempty"`
+	Timestamp             time.Time `json:"timestamp"`
+	ToolName              string    `json:"tool_name"`
+	ToolCategory          string    `json:"tool_category"`
+	ArgumentsRedacted     string    `json:"arguments_redacted,omitempty"`
+	ResultPreviewRedacted string    `json:"result_preview_redacted,omitempty"`
+	DurationMS            int64     `json:"duration_ms,omitempty"`
+	Success               bool      `json:"success"`
+	ExitCode              *int      `json:"exit_code,omitempty"`
+	TargetPathHash        string    `json:"target_path_hash,omitempty"`
+	TargetPathDisplay     string    `json:"target_path_display,omitempty"`
+	CommandSignature      string    `json:"command_signature,omitempty"`
+	ContentFingerprint    string    `json:"content_fingerprint,omitempty"`
+}
+
+// Finding is an explainable analyzer output with evidence references.
+type Finding struct {
+	ID          string         `json:"id"`
+	SessionID   string         `json:"session_id"`
+	TurnID      string         `json:"turn_id,omitempty"`
+	FindingType string         `json:"finding_type"`
+	Severity    string         `json:"severity"`
+	Confidence  Confidence     `json:"confidence"`
+	Title       string         `json:"title"`
+	Summary     string         `json:"summary"`
+	Evidence    []string       `json:"evidence"`
+	Metric      map[string]any `json:"metric"`
+	RuleVersion string         `json:"rule_version"`
+	CreatedAt   time.Time      `json:"created_at"`
+}
+
+// Metrics contains observable per-session aggregates.
+type Metrics struct {
+	DurationMS              int64   `json:"duration_ms"`
+	TurnCount               int     `json:"turn_count"`
+	InputTokens             int64   `json:"input_tokens"`
+	CachedInputTokens       int64   `json:"cached_input_tokens"`
+	OutputTokens            int64   `json:"output_tokens"`
+	ReasoningTokens         int64   `json:"reasoning_tokens"`
+	CacheRatio              float64 `json:"cache_ratio"`
+	ToolCalls               int     `json:"tool_calls"`
+	FailedToolCalls         int     `json:"failed_tool_calls"`
+	Reads                   int     `json:"reads"`
+	Searches                int     `json:"searches"`
+	Edits                   int     `json:"edits"`
+	Validations             int     `json:"validations"`
+	Compactions             int     `json:"compactions"`
+	ExplorationRatio        float64 `json:"exploration_ratio"`
+	FindingCount            int     `json:"finding_count"`
+	TimeToFirstEditMS       int64   `json:"time_to_first_edit_ms"`
+	TimeToFirstValidationMS int64   `json:"time_to_first_validation_ms"`
+}
+
+// CalculateMetrics computes descriptive values without assigning a productivity score.
+func CalculateMetrics(s Session) Metrics {
+	m := Metrics{TurnCount: len(s.Turns), ToolCalls: len(s.ToolCalls), FindingCount: len(s.Findings)}
+	if !s.EndedAt.IsZero() && !s.StartedAt.IsZero() {
+		m.DurationMS = s.EndedAt.Sub(s.StartedAt).Milliseconds()
+	}
+	for _, turn := range s.Turns {
+		m.InputTokens += turn.InputTokens
+		m.CachedInputTokens += turn.CachedInputTokens
+		m.OutputTokens += turn.OutputTokens
+		m.ReasoningTokens += turn.ReasoningTokens
+	}
+	if m.InputTokens > 0 {
+		m.CacheRatio = float64(m.CachedInputTokens) / float64(m.InputTokens)
+	}
+	for _, call := range s.ToolCalls {
+		if !call.Success {
+			m.FailedToolCalls++
+		}
+		switch call.ToolCategory {
+		case "read":
+			m.Reads++
+		case "search":
+			m.Searches++
+		case "edit":
+			m.Edits++
+			if m.TimeToFirstEditMS == 0 && !s.StartedAt.IsZero() && !call.Timestamp.Before(s.StartedAt) {
+				m.TimeToFirstEditMS = call.Timestamp.Sub(s.StartedAt).Milliseconds()
+			}
+		case "validation":
+			m.Validations++
+			if call.Success && m.TimeToFirstValidationMS == 0 && !s.StartedAt.IsZero() && !call.Timestamp.Before(s.StartedAt) {
+				m.TimeToFirstValidationMS = call.Timestamp.Sub(s.StartedAt).Milliseconds()
+			}
+		}
+	}
+	for _, event := range s.Events {
+		if event.EventType == "compaction" {
+			m.Compactions++
+		}
+	}
+	if m.ToolCalls > 0 {
+		m.ExplorationRatio = float64(m.Reads+m.Searches) / float64(m.ToolCalls)
+	}
+	return m
+}

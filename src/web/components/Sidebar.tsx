@@ -1,0 +1,4 @@
+/** @module Sidebar @description Renders primary local profiler navigation. */
+import React from "react";
+export type View="sessions"|"compare"|"diagnostics";
+export function Sidebar({view,onView,count}:{view:View;onView:(view:View)=>void;count:number}){return <aside className="sidebar"><div className="brand"><span className="brandMark">◈</span><b>SessionSift</b></div><nav>{([['sessions','◉','Sessions'],['compare','⇄','Compare'],['diagnostics','◇','Diagnostics']] as const).map(([id,icon,label])=><button key={id} className={view===id?"active":""} onClick={()=>onView(id)}><span>{icon}</span>{label}</button>)}</nav><div className="providerLabel">PROVIDER</div><div className="provider"><span className="statusDot"/>Codex <strong>{count}</strong></div><div className="privacy"><span>⌂</span><div><b>Local only</b><small>Nothing leaves this machine.</small></div></div></aside>}

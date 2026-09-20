@@ -1,0 +1,20 @@
+# Dependencies / build / secrets
+node_modules/
+dist/
+build/
+.env
+.env.*
+.DS_Store
+*.log
+!logs/branch_history.log
+tmp/
+cache/
+.cache/
+secrets/
+coverage/
+coverage.out
+src/webui/dist/
+sessionsift
+*.db
+*.db-shm
+*.db-wal

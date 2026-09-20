@@ -1,0 +1,12 @@
+/** @module App @description Loads local sessions and orchestrates the profiler screens. */
+import React,{useEffect,useState} from "react";
+import {api} from "./api";
+import {Compare} from "./components/Compare";
+import {Diagnostics} from "./components/Diagnostics";
+import {Inspector} from "./components/Inspector";
+import {SessionList} from "./components/SessionList";
+import {Sidebar,type View} from "./components/Sidebar";
+import type {Session} from "./types";
+import "./styles.css";
+
+export function App(){const[sessions,setSessions]=useState<Session[]>([]);const[selected,setSelected]=useState("");const[detail,setDetail]=useState<Session>();const[view,setView]=useState<View>("sessions");const[error,setError]=useState("");useEffect(()=>{let active=true;const refresh=()=>api.sessions(true).then(items=>{if(!active)return;setSessions(items);setSelected(value=>value||items.find(item=>item.session_kind!=="internal_review")?.id||items[0]?.id||"");setError("")}).catch(err=>active&&setError(String(err)));refresh();const timer=window.setInterval(refresh,3000);return()=>{active=false;window.clearInterval(timer)}},[]);useEffect(()=>{if(!selected)return;let active=true;const refresh=()=>api.session(selected).then(session=>{if(active)setDetail({...session,metrics:sessions.find(item=>item.id===selected)?.metrics})}).catch(err=>active&&setError(String(err)));refresh();const timer=window.setInterval(refresh,3000);return()=>{active=false;window.clearInterval(timer)}},[selected,sessions]);const developerSessions=sessions.filter(item=>item.session_kind!=="internal_review");const layout=view==="sessions"?"sessionLayout":"focusLayout";return <div className={`shell ${layout}`}><Sidebar view={view} onView={setView} count={developerSessions.length}/>{view==="sessions"&&<SessionList sessions={sessions} selected={selected} onSelect={setSelected}/>}<div className="content">{error&&<div className="fatal"><b>Local API unavailable</b><span>{error}</span></div>}{!error&&view==="sessions"&&detail?.metrics&&<Inspector key={detail.id} session={detail} onCompare={()=>setView("compare")}/>} {!error&&view==="sessions"&&!detail&&<div className="loading">Importing local Codex sessions…</div>}{view==="compare"&&<Compare sessions={developerSessions} initial={developerSessions.some(item=>item.id===selected)?selected:developerSessions[0]?.id}/>} {view==="diagnostics"&&<Diagnostics sessions={sessions}/>}</div></div>}
