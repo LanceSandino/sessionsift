@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/agent/service"
 	"github.com/LanceSandino/sessionsift/src/internal/api"
 	"github.com/LanceSandino/sessionsift/src/internal/app"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/discover"
@@ -25,6 +26,7 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/config"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	"github.com/LanceSandino/sessionsift/src/internal/ingest"
+	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
 
@@ -308,15 +310,13 @@ func list(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	defer store.Close()
-	sessions, err := store.ListSessions(ctx)
-	if err != nil {
-		return fail(errOut, err)
+	agent := service.NewLocal(store)
+	response := agent.Execute(ctx, protocolRequest("cli-list", protocol.SessionList, service.ListArguments{}))
+	if response.Status != protocol.StatusOK {
+		return fail(errOut, protocolError(response))
 	}
-	for _, session := range sessions {
-		if session.Kind == domain.InternalReviewSession {
-			continue
-		}
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", session.ID, session.StartedAt.Format(time.RFC3339), session.Model, session.Title)
+	for _, item := range response.Data.([]service.SessionSummary) {
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", item.ID, item.StartedAt.Format(time.RFC3339), item.Model, item.Title)
 	}
 	return 0
 }
@@ -326,11 +326,16 @@ func inspect(ctx context.Context, paths config.Paths, id string, out, errOut io.
 		return fail(errOut, err)
 	}
 	defer store.Close()
-	session, err := store.GetSession(ctx, id)
-	if err != nil {
-		return fail(errOut, err)
+	agent := service.NewLocal(store)
+	sessionResponse := agent.Execute(ctx, protocolRequest("cli-inspect", protocol.SessionGet, service.SessionArguments{SessionID: id}))
+	metricsResponse := agent.Execute(ctx, protocolRequest("cli-inspect-metrics", protocol.SessionMetrics, service.SessionArguments{SessionID: id}))
+	if sessionResponse.Status != protocol.StatusOK {
+		return fail(errOut, protocolError(sessionResponse))
 	}
-	return write(out, errOut, map[string]any{"session": session, "metrics": domain.CalculateMetrics(session)})
+	if metricsResponse.Status != protocol.StatusOK {
+		return fail(errOut, protocolError(metricsResponse))
+	}
+	return write(out, errOut, map[string]any{"session": sessionResponse.Data, "metrics": metricsResponse.Data})
 }
 func compare(ctx context.Context, paths config.Paths, aID, bID string, out, errOut io.Writer) int {
 	store, err := openStore(paths)
@@ -338,15 +343,25 @@ func compare(ctx context.Context, paths config.Paths, aID, bID string, out, errO
 		return fail(errOut, err)
 	}
 	defer store.Close()
-	a, err := store.GetSession(ctx, aID)
-	if err != nil {
-		return fail(errOut, err)
+	agent := service.NewLocal(store)
+	response := agent.Execute(ctx, protocolRequest("cli-compare", protocol.SessionCompare, service.CompareArguments{A: aID, B: bID}))
+	if response.Status != protocol.StatusOK {
+		return fail(errOut, protocolError(response))
 	}
-	b, err := store.GetSession(ctx, bID)
-	if err != nil {
-		return fail(errOut, err)
+	comparison := response.Data.(service.SessionComparison)
+	return write(out, errOut, map[string]any{"a": comparison.MetricsA, "b": comparison.MetricsB})
+}
+
+func protocolRequest(id string, operation protocol.Operation, arguments any) protocol.Request {
+	body, _ := json.Marshal(arguments)
+	return protocol.Request{Version: protocol.Version, RequestID: id, Operation: operation, Arguments: body}
+}
+
+func protocolError(response protocol.Response) error {
+	if response.Error != nil {
+		return errors.New(response.Error.Message)
 	}
-	return write(out, errOut, map[string]any{"a": domain.CalculateMetrics(a), "b": domain.CalculateMetrics(b)})
+	return errors.New("local agent operation failed")
 }
 
 func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {

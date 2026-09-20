@@ -118,6 +118,21 @@ func TestBadRoutesAndOTelAcceptance(t *testing.T) {
 	}
 }
 
+func TestTypedSessionProtocolEndpoint(t *testing.T) {
+	handler := Handler(testStore(t))
+	request := `{"version":1,"request_id":"req_http","operation":"session.list","arguments":{"include_internal":false}}`
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/api/v1/protocol", strings.NewReader(request)))
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"status":"ok"`) || !strings.Contains(res.Body.String(), `"title":"Test session"`) {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	unsafe := httptest.NewRecorder()
+	handler.ServeHTTP(unsafe, httptest.NewRequest(http.MethodPost, "/api/v1/protocol", strings.NewReader(`{"version":1,"request_id":"req_unsafe","operation":"shell.exec"}`)))
+	if unsafe.Code != http.StatusBadRequest || !strings.Contains(unsafe.Body.String(), `"status":"invalid_request"`) {
+		t.Fatalf("unsafe status=%d body=%s", unsafe.Code, unsafe.Body.String())
+	}
+}
+
 func TestClosedStoreReturnsInternalError(t *testing.T) {
 	store := testStore(t)
 	_ = store.Close()
@@ -130,12 +145,8 @@ func TestClosedStoreReturnsInternalError(t *testing.T) {
 	}
 }
 
-func TestComparisonEvidenceHelpers(t *testing.T) {
-	session := domain.Session{Findings: []domain.Finding{{FindingType: "possible_scope_correction"}, {FindingType: "other"}}}
-	if got := observedDuration(1500); got == "no observed edit" {
-		t.Fatalf("duration=%q", got)
-	}
-	if findingCount(session, "possible_scope_correction") != 1 {
-		t.Fatal("finding count did not match")
+func TestProtocolStatusMapping(t *testing.T) {
+	if statusFor("invalid_request") != http.StatusBadRequest || statusFor("denied") != http.StatusForbidden || statusFor("not_found") != http.StatusNotFound || statusFor("error") != http.StatusInternalServerError {
+		t.Fatal("protocol status mapping changed")
 	}
 }

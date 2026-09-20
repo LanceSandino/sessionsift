@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/agent/service"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/otel"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"github.com/LanceSandino/sessionsift/src/internal/redact"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 	"github.com/LanceSandino/sessionsift/src/webui"
@@ -19,6 +21,7 @@ import (
 
 // Handler returns the complete localhost application handler.
 func Handler(store *storage.Store) http.Handler {
+	agent := service.NewLocal(store)
 	assets, _ := fs.Sub(webui.Assets, "dist")
 	static := http.FileServer(http.FS(assets))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,11 +30,13 @@ func Handler(store *storage.Store) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
-			listSessions(store, w, r)
+			listSessions(agent, w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/sessions/"):
-			sessionRoute(store, w, r)
+			sessionRoute(agent, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/compare":
-			compare(store, w, r)
+			compare(agent, w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/protocol":
+			receiveProtocol(agent, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/internal/hooks/codex":
 			receiveHook(store, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/logs":
@@ -51,6 +56,22 @@ func Handler(store *storage.Store) http.Handler {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
 	})
+}
+
+func receiveProtocol(agent *service.Service, w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, protocol.MaximumArgumentsBytes+(8<<10)))
+	decoder.DisallowUnknownFields()
+	var request protocol.Request
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.Response{Version: protocol.Version, Status: protocol.StatusInvalidRequest, Error: &protocol.Error{Code: "invalid_request", Message: "invalid protocol request"}})
+		return
+	}
+	response := agent.Execute(r.Context(), request)
+	status := http.StatusOK
+	if response.Status != protocol.StatusOK {
+		status = statusFor(response.Status)
+	}
+	writeJSON(w, status, response)
 }
 
 func receiveOTelMetrics(w http.ResponseWriter, r *http.Request) {
@@ -87,99 +108,92 @@ func receiveOTel(store *storage.Store, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]int{"accepted": len(events)})
 }
 
-func listSessions(store *storage.Store, w http.ResponseWriter, r *http.Request) {
-	sessions, err := store.ListSessions(r.Context())
-	if err != nil {
-		apiError(w, err)
-		return
+func listSessions(agent *service.Service, w http.ResponseWriter, r *http.Request) {
+	data, ok := execute(agent, w, r, protocol.SessionList, service.ListArguments{IncludeInternal: r.URL.Query().Get("include_internal") == "true"})
+	if ok {
+		writeJSON(w, http.StatusOK, data)
 	}
-	type item struct {
-		domain.Session
-		Metrics domain.Metrics `json:"metrics"`
-	}
-	items := make([]item, 0, len(sessions))
-	for _, session := range sessions {
-		if session.Kind == domain.InternalReviewSession && r.URL.Query().Get("include_internal") != "true" {
-			continue
-		}
-		metrics := domain.CalculateMetrics(session)
-		session.CWD = ""
-		session.Turns = nil
-		session.Events = nil
-		session.ToolCalls = nil
-		session.Findings = nil
-		items = append(items, item{Session: session, Metrics: metrics})
-	}
-	writeJSON(w, http.StatusOK, items)
 }
 
-func sessionRoute(store *storage.Store, w http.ResponseWriter, r *http.Request) {
+func sessionRoute(agent *service.Service, w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session id required"})
 		return
 	}
-	session, err := store.GetSession(r.Context(), parts[0])
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
 	if len(parts) == 1 {
-		writeJSON(w, http.StatusOK, session)
+		data, ok := execute(agent, w, r, protocol.SessionGet, service.SessionArguments{SessionID: parts[0]})
+		if ok {
+			writeJSON(w, http.StatusOK, data)
+		}
 		return
 	}
 	switch parts[1] {
 	case "turns":
-		writeJSON(w, http.StatusOK, session.Turns)
+		data, ok := execute(agent, w, r, protocol.SessionGet, service.SessionArguments{SessionID: parts[0]})
+		if ok {
+			writeJSON(w, http.StatusOK, data.(domain.Session).Turns)
+		}
 	case "events":
-		writeJSON(w, http.StatusOK, session.Events)
+		data, ok := execute(agent, w, r, protocol.SessionTimeline, service.TimelineArguments{SessionID: parts[0], Limit: 1000})
+		if ok {
+			writeJSON(w, http.StatusOK, data.(service.SessionTimelineResponse).Events)
+		}
 	case "findings":
-		writeJSON(w, http.StatusOK, session.Findings)
+		data, ok := execute(agent, w, r, protocol.SessionFindings, service.SessionArguments{SessionID: parts[0]})
+		if ok {
+			writeJSON(w, http.StatusOK, data)
+		}
 	case "metrics":
-		writeJSON(w, http.StatusOK, domain.CalculateMetrics(session))
+		data, ok := execute(agent, w, r, protocol.SessionMetrics, service.SessionArguments{SessionID: parts[0]})
+		if ok {
+			writeJSON(w, http.StatusOK, data)
+		}
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
 }
 
-func compare(store *storage.Store, w http.ResponseWriter, r *http.Request) {
-	a, errA := store.GetSession(r.Context(), r.URL.Query().Get("a"))
-	b, errB := store.GetSession(r.Context(), r.URL.Query().Get("b"))
-	if errA != nil || errB != nil {
+func compare(agent *service.Service, w http.ResponseWriter, r *http.Request) {
+	body, _ := json.Marshal(service.CompareArguments{A: r.URL.Query().Get("a"), B: r.URL.Query().Get("b")})
+	response := agent.Execute(r.Context(), protocol.Request{Version: protocol.Version, RequestID: "http", Operation: protocol.SessionCompare, Arguments: body})
+	if response.Status != protocol.StatusOK {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "two valid session ids are required"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"a": a, "b": b, "metrics_a": domain.CalculateMetrics(a), "metrics_b": domain.CalculateMetrics(b), "differences": observableDifferences(a, b)})
+	writeJSON(w, http.StatusOK, response.Data)
 }
 
-func observableDifferences(a, b domain.Session) []string {
-	ma, mb := domain.CalculateMetrics(a), domain.CalculateMetrics(b)
-	var values []string
-	values = append(values, fmt.Sprintf("Session A used %d tool calls; Session B used %d.", ma.ToolCalls, mb.ToolCalls))
-	values = append(values, fmt.Sprintf("Session A cache reuse was %.0f%%; Session B was %.0f%%.", ma.CacheRatio*100, mb.CacheRatio*100))
-	values = append(values, fmt.Sprintf("Session A recorded %d failed calls; Session B recorded %d.", ma.FailedToolCalls, mb.FailedToolCalls))
-	values = append(values, fmt.Sprintf("Session A performed %d read/search calls; Session B performed %d.", ma.Reads+ma.Searches, mb.Reads+mb.Searches))
-	values = append(values, fmt.Sprintf("Session A reached its first edit after %s; Session B after %s.", observedDuration(ma.TimeToFirstEditMS), observedDuration(mb.TimeToFirstEditMS)))
-	values = append(values, fmt.Sprintf("Session A had %d possible scope corrections; Session B had %d.", findingCount(a, "possible_scope_correction"), findingCount(b, "possible_scope_correction")))
-	return values
-}
-
-func observedDuration(milliseconds int64) string {
-	if milliseconds <= 0 {
-		return "no observed edit"
+func execute(agent *service.Service, w http.ResponseWriter, r *http.Request, operation protocol.Operation, arguments any) (any, bool) {
+	body, err := json.Marshal(arguments)
+	if err != nil {
+		apiError(w, err)
+		return nil, false
 	}
-	return time.Duration(milliseconds * int64(time.Millisecond)).Round(time.Second).String()
+	response := agent.Execute(r.Context(), protocol.Request{Version: protocol.Version, RequestID: "http", Operation: operation, Arguments: body})
+	if response.Status == protocol.StatusOK {
+		return response.Data, true
+	}
+	message := "operation failed"
+	if response.Error != nil {
+		message = response.Error.Message
+	}
+	writeJSON(w, statusFor(response.Status), map[string]string{"error": message})
+	return nil, false
 }
 
-func findingCount(session domain.Session, kind string) int {
-	count := 0
-	for _, finding := range session.Findings {
-		if finding.FindingType == kind {
-			count++
-		}
+func statusFor(status protocol.Status) int {
+	switch status {
+	case protocol.StatusInvalidRequest:
+		return http.StatusBadRequest
+	case protocol.StatusDenied:
+		return http.StatusForbidden
+	case protocol.StatusNotFound:
+		return http.StatusNotFound
+	default:
+		return http.StatusInternalServerError
 	}
-	return count
 }
 
 func receiveHook(store *storage.Store, w http.ResponseWriter, r *http.Request) {

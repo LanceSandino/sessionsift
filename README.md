@@ -6,6 +6,10 @@ exports, normalizes activity into SQLite, and shows where tokens, context,
 tools, retries, and corrections accumulated. Its findings link back to observed
 evidence; it does not assign a productivity score.
 
+The trusted Go process is the Local Agent product boundary. React, CLI, and
+future MCP clients consume the same allowlisted, versioned Session Protocol;
+provider parsers and SQLite are not client-facing interfaces.
+
 ## Quick start
 
 Requirements: Go 1.27+ and Node.js 22+.
@@ -146,6 +150,13 @@ findings, metrics, and comparisons below `/api/v1`. Session lists exclude
 internal reviews by default; pass `include_internal=true` to include them. Hook
 ingestion is available at `/internal/hooks/codex`, OTLP logs at `/v1/logs`, OTLP
 metrics at `/v1/metrics`, and `/healthz` reports collector health.
+
+`POST /api/v1/protocol` exposes the localhost-only typed Session Protocol. Its
+v1 registry contains session list/detail/metrics/timeline/findings/comparison,
+turn detail, and connection-status operations. Every operation defines its
+capability, audit category, response-size limit, redaction policy, timeout, and
+pagination behavior. Generic shell, process, filesystem, command, and SQL
+operations are intentionally absent and fail closed.
 
 ## License
 
