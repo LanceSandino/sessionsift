@@ -1,5 +1,5 @@
 /** @module ApiClient @description Fetches local-only SessionSift JSON resources. */
-import type { AnalyticsReport, ComparePayload, HostedInvitation, RemoteGrant, RemotePairing, RemoteStatus, Session } from "./types";
+import type { AnalyticsReport, BridgeStatus, ComparePayload, HostedInvitation, LinkOffer, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
 
 async function request<T>(path:string):Promise<T>{
   const response=await fetch(path,{headers:{Accept:"application/json"}});
@@ -7,7 +7,7 @@ async function request<T>(path:string):Promise<T>{
   return response.json() as Promise<T>;
 }
 async function requestArray<T>(path:string):Promise<T[]>{const value=await request<T[]|null>(path);return Array.isArray(value)?value:[]}
-async function send<T>(path:string,body:unknown):Promise<T>{const response=await fetch(path,{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify(body)});if(!response.ok)throw new Error(`Local API returned ${response.status}`);return response.json() as Promise<T>}
+async function send<T>(path:string,body:unknown):Promise<T>{const response=await fetch(path,{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify(body)});if(!response.ok){const detail=await response.json().catch(()=>undefined) as {error?:string}|undefined;throw new Error(detail?.error||`Local API returned ${response.status}`)}return response.json() as Promise<T>}
 async function remoteSend<T>(path:string,body:unknown,token:string):Promise<T>{const response=await fetch(path,{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify(body)});if(!response.ok)throw new Error(`Remote API returned ${response.status}`);return response.json() as Promise<T>}
 export const api={
   sessions:async(includeInternal=false)=>{
@@ -18,6 +18,13 @@ export const api={
   compare:(a:string,b:string)=>request<ComparePayload>(`/api/v1/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
   analytics:()=>request<AnalyticsReport>("/api/v1/analytics"),
   remoteStatus:()=>request<RemoteStatus>("/api/v1/remote/status"),
+  bridge:()=>request<BridgeStatus>("/api/v1/remote/bridge"),
+  connectBridge:(url:string,name:string)=>send<BridgeStatus>("/api/v1/remote/bridge/connect",{url,name}),
+  startLink:()=>send<LinkOffer>("/api/v1/remote/bridge/link",{}),
+  refreshBridge:()=>send<BridgeStatus>("/api/v1/remote/bridge/refresh",{}),
+  supportSessions:()=>requestArray<SupportSession>("/api/v1/remote/support"),
+  startSupport:(session_id:string,role:SupportRole,minutes:number)=>send<SupportOffer>("/api/v1/remote/support",{session_id,role,minutes}),
+  endSupport:(id:string)=>send<SupportSession>("/api/v1/remote/support/end",{id}),
   approveOAuthPrincipal:(principal:string)=>send<RemoteGrant>("/api/v1/remote/oauth/grants",{principal,duration_days:14,operations:["session.list","session.get","session.metrics","session.timeline","session.findings","session.compare","turn.get","analysis.patterns","analysis.recurring_corrections","context.recommendations"]}),
   createPairing:()=>send<RemotePairing>("/api/v1/remote/pairings",{}),
   approvePairing:(code:string)=>send<{grant:unknown;token:string}>("/api/v1/remote/pairings/approve",{code,duration_minutes:30}),

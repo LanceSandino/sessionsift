@@ -13,7 +13,7 @@ import (
 // Only the fixed, compiled bootstrap scripts may execute inline.
 func hostedCSP() string {
 	policy := "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'"
-	for _, page := range []string{connectPage, invitePage} {
+	for _, page := range []string{connectPage, invitePage, supportPage} {
 		_, script, ok := strings.Cut(page, "<script>")
 		if !ok {
 			continue
@@ -26,6 +26,16 @@ func hostedCSP() string {
 }
 
 func hostedPage(page string) string {
+	prefix := "/"
+	if page == invitePage {
+		prefix = "/invite/"
+	}
+	return hostedPageAt(page, prefix)
+}
+
+// hostedPageAt injects the shared safe-content bundle under a path prefix the
+// serving Access application already covers.
+func hostedPageAt(page, prefix string) string {
 	assets, err := fs.Sub(webui.Assets, "dist")
 	if err != nil {
 		return page
@@ -34,19 +44,18 @@ func hostedPage(page string) string {
 	if len(names) != 1 {
 		return page
 	}
-	prefix := "/"
-	if page == invitePage {
-		prefix = "/invite/"
-	}
 	return strings.Replace(page, "</head>", `<script type="module" src="`+prefix+names[0]+`"></script></head>`, 1)
 }
 
 func serveAsset(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/invite/assets/") {
-		r = r.Clone(r.Context())
-		u := *r.URL
-		u.Path = strings.TrimPrefix(u.Path, "/invite")
-		r.URL = &u
+	for _, alias := range []string{"/invite", "/support"} {
+		if strings.HasPrefix(r.URL.Path, alias+"/assets/") {
+			r = r.Clone(r.Context())
+			u := *r.URL
+			u.Path = strings.TrimPrefix(u.Path, alias)
+			r.URL = &u
+			break
+		}
 	}
 	assets, err := fs.Sub(webui.Assets, "dist")
 	if err != nil {

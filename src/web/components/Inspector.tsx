@@ -6,12 +6,13 @@ import {MetricCard} from "./MetricCard";
 import {SessionWorkspace} from "./SessionWorkspace";
 import {TurnDetail} from "./TurnDetail";
 import {usageDeltaLabel} from "../usageMetrics";
+import {sourceInfo} from "../sources";
 
 export function Inspector({session,onCompare}:{session:Session;onCompare:()=>void}){
   const[selectedTurn,setSelectedTurn]=useState<Turn>();
   const[showMetrics,setShowMetrics]=useState(false);
   const metrics=session.metrics!;
-  const source=session.source==="chatgpt"?"ChatGPT":"Codex";
+  const source=sourceInfo(session).label;
   return <main className="inspector">
     <header className="inspectorHeader"><div><span className="eyebrow">{source.toUpperCase()} / {session.repo_display_name||"conversation"}</span><h1>{session.title}</h1><p>{source} · {session.model||"model unavailable"} · {duration(metrics.duration_ms)} active · {duration(metrics.elapsed_duration_ms)} elapsed · {metrics.tool_calls} tool calls · {metrics.mcp_calls} MCP</p></div><div className="inspectorActions"><button className="secondaryButton" aria-expanded={showMetrics} onClick={()=>setShowMetrics(!showMetrics)}>{showMetrics?"Hide metrics":"Metrics"}</button><button className="primaryButton" onClick={onCompare}>Compare</button></div></header>
     {session.warnings?.length?<div className="warningBanner">Parser retained this session with {session.warnings.length} warning{session.warnings.length===1?"":"s"}.</div>:null}

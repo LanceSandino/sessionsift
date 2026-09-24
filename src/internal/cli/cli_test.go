@@ -114,13 +114,29 @@ func TestHostedAgentEnrollmentShareStatusAndRevoke(t *testing.T) {
 	hostedHTTPClient = client
 	t.Cleanup(func() { hostedHTTPClient = previousClient })
 
-	enrollment, err := bridgeStore.CreateEnrollment("owner@example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
 	var out, errOut bytes.Buffer
-	if code := Run(context.Background(), []string{"agent", "enroll", "http://localhost", enrollment.Code, "Test Mac"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Connected device_") {
-		t.Fatalf("enroll code=%d out=%s err=%s", code, out.String(), errOut.String())
+	if code := Run(context.Background(), []string{"agent", "status"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "not connected") {
+		t.Fatalf("status before connect code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"agent", "enroll", "http://localhost", "CODE"}, strings.NewReader(""), &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "agent connect") {
+		t.Fatalf("retired enroll code=%d err=%s", code, errOut.String())
+	}
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"agent", "connect", "http://localhost", "Test", "Mac"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Connected Test Mac (device_") {
+		t.Fatalf("connect code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"agent", "status"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "not linked") {
+		t.Fatalf("unlinked status code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"agent", "link", "--no-wait"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Link code: ") {
+		t.Fatalf("link code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	linkCode := strings.Fields(strings.SplitN(out.String(), "Link code: ", 2)[1])[0]
+	if _, err = bridgeStore.ClaimDeviceLink("owner@example.com", linkCode, ""); err != nil {
+		t.Fatal(err)
 	}
 	out.Reset()
 	errOut.Reset()
@@ -220,6 +236,15 @@ func TestHostedAgentCommandUsageAndUnenrolledStatus(t *testing.T) {
 	}{
 		{[]string{"agent", "status"}, 0},
 		{[]string{"agent", "enroll"}, 2},
+		{[]string{"agent", "connect"}, 2},
+		{[]string{"agent", "link"}, 1},
+		{[]string{"support"}, 2},
+		{[]string{"support", "start"}, 2},
+		{[]string{"support", "start", "missing-session"}, 1},
+		{[]string{"support", "end"}, 2},
+		{[]string{"support", "end", "support_missing"}, 1},
+		{[]string{"support", "list"}, 0},
+		{[]string{"support", "unknown"}, 2},
 		{[]string{"agent", "share"}, 2},
 		{[]string{"agent", "share", "person@example.com"}, 1},
 		{[]string{"agent", "revoke"}, 2},

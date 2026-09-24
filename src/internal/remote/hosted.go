@@ -1,3 +1,4 @@
+// @module HostedAgent is the device's signed bridge client: registration, grants, invitations, and task serving.
 package remote
 
 import (
@@ -21,10 +22,13 @@ import (
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 )
 
+// HostedConfig records this device's bridge registration. Owner is empty
+// until an owner links the device by entering a code it showed.
 type HostedConfig struct {
 	URL      string `json:"url"`
 	DeviceID string `json:"device_id"`
-	Owner    string `json:"owner"`
+	Owner    string `json:"owner,omitempty"`
+	Name     string `json:"name,omitempty"`
 }
 
 type HostedInvitation struct {
@@ -57,6 +61,9 @@ func NewHostedInviter(client *http.Client, config HostedConfig, identity Identit
 func (i *HostedInviter) Create(ctx context.Context, invitee, sessionID, role string, duration time.Duration) (HostedInvitation, error) {
 	if i == nil || i.manager == nil || duration <= 0 || duration > 30*24*time.Hour {
 		return HostedInvitation{}, errors.New("hosted invitations are not configured or duration is invalid")
+	}
+	if i.config.Owner == "" {
+		return HostedInvitation{}, errors.New("link this device to an owner account to send email invitations, or share a support code instead")
 	}
 	expiresAt := time.Now().UTC().Add(duration)
 	body, _ := json.Marshal(map[string]any{"owner": i.config.Owner, "invitee": invitee, "session_id": sessionID, "role": role, "expires_at": expiresAt})
@@ -138,7 +145,7 @@ func LoadHostedConfig(path string) (HostedConfig, error) {
 	if json.Unmarshal(body, &config) != nil {
 		return HostedConfig{}, errors.New("invalid hosted bridge configuration")
 	}
-	if _, err = validateBridgeURL(config.URL); err != nil || config.DeviceID == "" || config.Owner == "" {
+	if _, err = validateBridgeURL(config.URL); err != nil || config.DeviceID == "" {
 		return HostedConfig{}, errors.New("invalid hosted bridge configuration")
 	}
 	return config, nil
@@ -146,7 +153,7 @@ func LoadHostedConfig(path string) (HostedConfig, error) {
 
 func SaveHostedConfig(path string, config HostedConfig) error {
 	parsed, err := validateBridgeURL(config.URL)
-	if err != nil || config.DeviceID == "" || config.Owner == "" {
+	if err != nil || config.DeviceID == "" {
 		return errors.New("invalid hosted bridge configuration")
 	}
 	config.URL = strings.TrimRight(parsed.String(), "/")
@@ -161,18 +168,17 @@ func SaveHostedConfig(path string, config HostedConfig) error {
 	return os.Rename(temporary, path)
 }
 
-func EnrollHosted(ctx context.Context, client *http.Client, bridgeURL, code, name string, identity Identity) (HostedConfig, error) {
+// RegisterHosted joins a bridge with key-possession proof. No account or code
+// is needed; the returned configuration has no owner until the device is linked.
+func RegisterHosted(ctx context.Context, client *http.Client, bridgeURL, name string, identity Identity) (HostedConfig, error) {
 	parsed, err := validateBridgeURL(bridgeURL)
 	if err != nil {
 		return HostedConfig{}, err
 	}
 	publicKey := base64.RawURLEncoding.EncodeToString(identity.PublicKey)
-	message, _ := json.Marshal([]string{"sessionsift.enroll.v1", code, name, publicKey})
-	body, _ := json.Marshal(map[string]string{
-		"code": code, "name": name, "public_key": base64.RawURLEncoding.EncodeToString(identity.PublicKey),
-		"proof": base64.RawURLEncoding.EncodeToString(identity.Sign(message)),
-	})
-	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(parsed.String(), "/")+"/agent/v1/enroll", bytes.NewReader(body))
+	message, _ := json.Marshal([]string{"sessionsift.register.v1", name, publicKey})
+	body, _ := json.Marshal(map[string]string{"name": name, "public_key": publicKey, "proof": base64.RawURLEncoding.EncodeToString(identity.Sign(message))})
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(parsed.String(), "/")+"/agent/v1/register", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response, err := hostedClient(client).Do(request)
 	if err != nil {
@@ -182,17 +188,14 @@ func EnrollHosted(ctx context.Context, client *http.Client, bridgeURL, code, nam
 	if response.StatusCode != http.StatusCreated {
 		return HostedConfig{}, hostedResponseError(response)
 	}
-	var device struct {
-		ID    string `json:"id"`
-		Owner string `json:"owner"`
-	}
+	var device HostedDevice
 	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&device); err != nil {
 		return HostedConfig{}, err
 	}
-	if device.ID != identity.ID || device.Owner == "" {
+	if device.ID != identity.ID {
 		return HostedConfig{}, errors.New("bridge returned an unexpected device identity")
 	}
-	return HostedConfig{URL: strings.TrimRight(parsed.String(), "/"), DeviceID: device.ID, Owner: device.Owner}, nil
+	return HostedConfig{URL: strings.TrimRight(parsed.String(), "/"), DeviceID: device.ID, Owner: device.Owner, Name: device.Name}, nil
 }
 
 func RegisterHostedGrant(ctx context.Context, client *http.Client, config HostedConfig, identity Identity, principal string, operations []protocol.Operation, expiresAt time.Time) error {
@@ -260,6 +263,9 @@ func (a *Agent) ServeHostedNext(ctx context.Context, client *http.Client, config
 }
 
 func (a *Agent) executeHostedTask(ctx context.Context, principal string, request protocol.Request) protocol.Response {
+	if request.Operation == protocol.SupportRedeem {
+		return a.redeemSupport(principal, request)
+	}
 	authorizer := NewPrincipalAuthorizer(a.manager, principal)
 	if request.Operation != protocol.AnnotationList && request.Operation != protocol.AnnotationCreate && request.Operation != protocol.ReviewList && request.Operation != protocol.ReviewCreate {
 		return service.New(a.repository, authorizer).Execute(ctx, request)

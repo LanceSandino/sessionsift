@@ -7,7 +7,7 @@ import (
 )
 
 func TestDefinitionsAreBoundedDomainOperations(t *testing.T) {
-	want := []Operation{SessionList, SessionGet, SessionMetrics, SessionTimeline, SessionFindings, SessionCompare, TurnGet, ConnectionStatus, ConnectionDisconnect, AnnotationList, AnnotationCreate, ReviewList, ReviewCreate, AnalysisPatterns, AnalysisCorrections, ContextRecommendations}
+	want := []Operation{SessionList, SessionGet, SessionMetrics, SessionTimeline, SessionFindings, SessionCompare, TurnGet, ConnectionStatus, ConnectionDisconnect, AnnotationList, AnnotationCreate, ReviewList, ReviewCreate, AnalysisPatterns, AnalysisCorrections, ContextRecommendations, SupportRedeem}
 	definitions := Definitions()
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions=%d want=%d", len(definitions), len(want))

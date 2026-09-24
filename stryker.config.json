@@ -8,7 +8,9 @@
   "mutate": [
     "src/web/components/sessionFilters.ts",
     "src/web/components/timelineWindow.ts",
-    "src/web/components/timelineJourney.ts"
+    "src/web/components/timelineJourney.ts",
+    "src/web/sources.ts",
+    "src/web/supportState.ts"
   ],
   "ignorePatterns": [
     "/.cache",
@@ -17,7 +19,10 @@
     "/src/webui/dist"
   ],
   "disableTypeChecks": "src/web/**/*.{ts,tsx}",
-  "reporters": ["clear-text", "progress"],
+  "reporters": [
+    "clear-text",
+    "progress"
+  ],
   "thresholds": {
     "high": 80,
     "low": 60,

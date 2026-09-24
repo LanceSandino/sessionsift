@@ -19,3 +19,7 @@ src/webui/dist/
 *.db
 *.db-shm
 *.db-wal
+*.exe
+*.test
+.stryker-tmp/
+reports/

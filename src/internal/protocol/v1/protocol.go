@@ -3,10 +3,12 @@
 package v1
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -35,6 +37,9 @@ const (
 	AnalysisPatterns       Operation = "analysis.patterns"
 	AnalysisCorrections    Operation = "analysis.recurring_corrections"
 	ContextRecommendations Operation = "context.recommendations"
+	// SupportRedeem is relay-internal: the bridge asks the device to verify a
+	// support code it generated. It is never grantable or exposed to clients.
+	SupportRedeem Operation = "support.redeem"
 )
 
 type Definition struct {
@@ -45,6 +50,7 @@ type Definition struct {
 	RedactionPolicy      string
 	Timeout              time.Duration
 	Paginated            bool
+	Internal             bool
 }
 
 var definitions = map[Operation]Definition{
@@ -64,6 +70,20 @@ var definitions = map[Operation]Definition{
 	AnalysisPatterns:       definition(AnalysisPatterns, "analysis.read", 4<<20, false),
 	AnalysisCorrections:    definition(AnalysisCorrections, "analysis.read", 1<<20, false),
 	ContextRecommendations: definition(ContextRecommendations, "analysis.read", 1<<20, false),
+	SupportRedeem:          internalDefinition(SupportRedeem, "support.connect", 16<<10),
+}
+
+func internalDefinition(operation Operation, capability Capability, maximum int) Definition {
+	value := definition(operation, capability, maximum, false)
+	value.Internal = true
+	return value
+}
+
+// Grantable reports whether an operation may appear in any grant, pairing,
+// invitation, support role, or MCP tool list.
+func Grantable(operation Operation) bool {
+	value, ok := definitions[operation]
+	return ok && !value.Internal
 }
 
 func definition(operation Operation, capability Capability, maximum int, paginated bool) Definition {
@@ -135,6 +155,68 @@ func (r Request) Validate() error {
 	if len(r.Arguments) > 0 && !json.Valid(r.Arguments) {
 		return errors.New("invalid arguments")
 	}
+	if err := rejectAmbiguousKeys(r.Arguments); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rejectAmbiguousKeys refuses objects that repeat a key under any letter case.
+// Go decodes struct fields case-insensitively and keeps the last duplicate, so
+// an ambiguous object could satisfy an exact-key scope check while selecting a
+// different value for execution.
+func rejectAmbiguousKeys(raw json.RawMessage) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := walkValue(decoder, 0); err != nil {
+		return err
+	}
+	return nil
+}
+
+func walkValue(decoder *json.Decoder, depth int) error {
+	if depth > 64 {
+		return errors.New("arguments are nested too deeply")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("invalid arguments")
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]bool{}
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			if keyErr != nil {
+				return errors.New("invalid arguments")
+			}
+			key, _ := keyToken.(string)
+			folded := strings.ToLower(key)
+			if seen[folded] {
+				return errors.New("arguments repeat a field name")
+			}
+			seen[folded] = true
+			if err = walkValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err = walkValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err = decoder.Token(); err != nil {
+		return errors.New("invalid arguments")
+	}
 	return nil
 }
 
@@ -159,4 +241,37 @@ type Response struct {
 	Status    Status `json:"status"`
 	Data      any    `json:"data,omitempty"`
 	Error     *Error `json:"error,omitempty"`
+}
+
+// sessionKeys are the argument names through which an operation can select a session.
+var sessionKeys = map[string]bool{"session_id": true, "a": true, "b": true}
+
+// SessionScoped reports whether arguments select exactly sessionID under every
+// spelling the Local Agent's decoder would accept. Non-canonical spellings and
+// ambiguous objects are refused rather than interpreted.
+func SessionScoped(arguments json.RawMessage, sessionID string) bool {
+	if sessionID == "" || len(arguments) == 0 || rejectAmbiguousKeys(arguments) != nil {
+		return false
+	}
+	var values map[string]any
+	if json.Unmarshal(arguments, &values) != nil {
+		return false
+	}
+	target, ok := values["session_id"].(string)
+	if !ok || target != sessionID {
+		return false
+	}
+	for key, value := range values {
+		folded := strings.ToLower(key)
+		if !sessionKeys[folded] {
+			continue
+		}
+		if key != folded {
+			return false
+		}
+		if text, isText := value.(string); !isText || text != sessionID {
+			return false
+		}
+	}
+	return true
 }

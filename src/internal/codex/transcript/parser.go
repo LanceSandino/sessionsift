@@ -1,4 +1,5 @@
 // Package transcript defensively adapts unstable Codex JSONL into domain records.
+// @module CodexTranscript maps Codex JSONL into redacted, provider-neutral sessions.
 package transcript
 
 import (
@@ -206,7 +207,7 @@ func parseSessionMeta(s *domain.Session, raw json.RawMessage) {
 	base := filepath.Base(filepath.Clean(value.CWD))
 	if base != "." && base != string(filepath.Separator) {
 		s.RepoDisplayName = base
-		s.RepoRootHash = redact.Hash(filepath.Clean(value.CWD))
+		s.RepoRootHash = redact.PathHash(filepath.Clean(value.CWD))
 	}
 }
 
@@ -258,7 +259,7 @@ func parseTurn(s *domain.Session, record envelope, indexes map[string]int, lates
 	if s.CWD == "" {
 		s.CWD = value.CWD
 		s.RepoDisplayName = filepath.Base(filepath.Clean(value.CWD))
-		s.RepoRootHash = redact.Hash(filepath.Clean(value.CWD))
+		s.RepoRootHash = redact.PathHash(filepath.Clean(value.CWD))
 	}
 	return id
 }
@@ -436,11 +437,11 @@ func newToolCall(id, sessionID, turnID string, at time.Time, name, arguments str
 	call := domain.ToolCall{ID: id, SessionID: sessionID, TurnID: turnID, Timestamp: at, ToolName: name, ToolCategory: category, ArgumentsRedacted: redactedArgs, Success: true}
 	call.ToolTransport, call.ToolServer = toolmeta.Describe(name)
 	if target != "" {
-		call.TargetPathHash = redact.Hash(target)
+		call.TargetPathHash = redact.PathHash(target)
 		call.TargetPathDisplay = redact.DisplayPath(target)
 	}
 	if category == "execute" || category == "validation" {
-		call.CommandSignature = commandSignature(arguments)
+		call.CommandSignature = commandSignature(redactedArgs)
 	}
 	return call
 }
@@ -560,12 +561,10 @@ func cleanUserContent(value string) string {
 	return strings.TrimSpace(value)
 }
 
+// titleFrom derives a list label from the first prompt. Titles are shown in
+// every session list and remote listing, so they are redacted like content.
 func titleFrom(value string) string {
-	value = strings.Join(strings.Fields(value), " ")
-	if len(value) > 80 {
-		value = value[:77] + "…"
-	}
-	return value
+	return redact.Title(value, 80)
 }
 
 func fallbackID(start time.Time, lines int) string {

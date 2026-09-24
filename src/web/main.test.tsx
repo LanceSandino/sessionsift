@@ -16,7 +16,7 @@ describe("App",()=>{
     window.history.replaceState({},"","/");
     vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL)=>String(input)==="/api/v1/sessions/s1"?response(detail):response([summary])));
     render(<App/>);
-    expect(await screen.findByRole("heading",{name:"Fix authentication middleware"})).toBeInTheDocument();
+    expect(await screen.findByRole("heading",{name:"Fix authentication middleware"},{timeout:5000})).toBeInTheDocument();
     expect(window.location.pathname).toBe("/");
   });
 

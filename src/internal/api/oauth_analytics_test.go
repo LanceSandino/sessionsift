@@ -33,10 +33,13 @@ func TestOAuthMCPRequiresVerifiedAndLocallyApprovedIdentity(t *testing.T) {
 		}
 		return accessauth.Principal{Subject: "subject", Email: "owner@example.com"}, nil
 	})
+	// This local /mcp route is only reachable through the explicit Docker tunnel mode.
+	t.Setenv("SESSIONSIFT_ALLOW_DOCKER_TUNNEL", "true")
+	t.Setenv("SESSIONSIFT_PUBLIC_URL", "https://sessionsift.example")
 	handler := HandlerWithRemoteAccess(store, manager, remote.Identity{ID: "device"}, verifier, "https://sessionsift.example")
 
 	unauthorized := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "https://sessionsift.example/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	request := localRequest(http.MethodPost, "https://sessionsift.example/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
 	request.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(unauthorized, request)
 	if unauthorized.Code != http.StatusUnauthorized || !strings.Contains(unauthorized.Header().Get("WWW-Authenticate"), "oauth-protected-resource") {
@@ -78,12 +81,12 @@ func TestAnalyticsAndProtectedResourceMetadataExcludeConversationText(t *testing
 	handler := HandlerWithRemoteAccess(store, manager, remote.Identity{}, nil, "https://sessionsift.example")
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/analytics", nil))
+	handler.ServeHTTP(recorder, localRequest(http.MethodGet, "/api/v1/analytics", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"sessions":1`) || strings.Contains(recorder.Body.String(), "sensitive prompt") {
 		t.Fatalf("analytics=%d %s", recorder.Code, recorder.Body.String())
 	}
 	metadata := httptest.NewRecorder()
-	handler.ServeHTTP(metadata, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil))
+	handler.ServeHTTP(metadata, localRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil))
 	if metadata.Code != http.StatusOK || !strings.Contains(metadata.Body.String(), `"resource":"https://sessionsift.example"`) || !strings.Contains(metadata.Body.String(), "offline_access") {
 		t.Fatalf("metadata=%d %s", metadata.Code, metadata.Body.String())
 	}

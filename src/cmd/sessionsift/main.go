@@ -1,4 +1,5 @@
 // Package main is the SessionSift command-line entrypoint.
+// @module SessionSiftMain is the process entrypoint that hands arguments to the CLI.
 package main
 
 import (

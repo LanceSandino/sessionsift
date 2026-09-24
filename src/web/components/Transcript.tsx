@@ -4,6 +4,7 @@ import React,{useEffect,useRef,useState} from "react";
 import type {Session} from "../types";
 import {scrollToCheckpoint,useLatestScroll} from "../useLatestScroll";
 import {latestWindow} from "./timelineWindow";
+import {sourceInfo} from "../sources";
 
 export function Transcript({session}:{session:Session}){
   const viewport=useRef<HTMLDivElement>(null);
@@ -11,7 +12,7 @@ export function Transcript({session}:{session:Session}){
   const[limit,setLimit]=useState(3);
   const{shown,remaining}=latestWindow(turns,limit);
   const nextBatch=Math.min(5,remaining);
-  const assistant=session.source==="chatgpt"?"ChatGPT":"Codex";
+  const assistant=sourceInfo(session).assistant;
   useLatestScroll(viewport,session.id);
   useEffect(()=>setLimit(3),[session.id]);
   const jump=(id:string)=>{if(id)scrollToCheckpoint(id,viewport.current);else if(viewport.current)viewport.current.scrollTop=viewport.current.scrollHeight};

@@ -37,13 +37,11 @@ func TestHostedAgentEnrollsAndServesPrincipalScopedTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, _ := bridgeStore.CreateEnrollment("owner@example.com")
-	config, err := remote.EnrollHosted(context.Background(), client, "http://localhost", enrollment.Code, "Test laptop", identity)
-	if err != nil || config.DeviceID != identity.ID {
-		t.Fatalf("config=%+v err=%v", config, err)
-	}
-
 	manager, _ := remote.OpenManager(filepath.Join(state, "remote.json"))
+	config := linkedHostedConfig(t, client, bridgeStore, identity, manager, "owner@example.com")
+	if config.DeviceID != identity.ID || config.Owner != "owner@example.com" {
+		t.Fatalf("config=%+v", config)
+	}
 	grant, err := manager.ApproveOAuthPrincipal(config.Owner, []protocol.Operation{protocol.SessionList}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -99,12 +97,15 @@ func TestHostedInvitationCreatesLocalScopeAndServesCollaboration(t *testing.T) {
 		return recorder.Result(), nil
 	})}
 	identity, _ := remote.LoadOrCreateIdentity(filepath.Join(state, "identity.json"))
-	enrollment, _ := bridgeStore.CreateEnrollment("owner@example.com")
-	config, err := remote.EnrollHosted(context.Background(), client, "http://localhost", enrollment.Code, "Test laptop", identity)
+	manager, _ := remote.OpenManager(filepath.Join(state, "remote.json"))
+	unlinked, err := remote.RegisterHosted(context.Background(), client, "http://localhost", "Test laptop", identity)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, _ := remote.OpenManager(filepath.Join(state, "remote.json"))
+	if _, err = remote.NewHostedInviter(client, unlinked, identity, manager).Create(context.Background(), "reviewer@example.com", "s1", "comment", time.Hour); err == nil {
+		t.Fatal("an unlinked device sent an email invitation")
+	}
+	config := linkedHostedConfig(t, client, bridgeStore, identity, manager, "owner@example.com")
 	inviter := remote.NewHostedInviter(client, config, identity, manager)
 	invitation, err := inviter.Create(context.Background(), "reviewer@example.com", "s1", "comment", time.Hour)
 	if err != nil || invitation.AcceptURL == "" || len(manager.InviteGrants()) != 1 {
@@ -146,6 +147,35 @@ func TestHostedInvitationCreatesLocalScopeAndServesCollaboration(t *testing.T) {
 	}
 }
 
+// linkedHostedConfig registers a device and links it to owner exactly as the
+// product flow does: the device shows a code and the owner enters it.
+func linkedHostedConfig(t *testing.T, client *http.Client, bridgeStore *bridge.Store, identity remote.Identity, manager *remote.Manager, owner string) remote.HostedConfig {
+	t.Helper()
+	ctx := context.Background()
+	config, err := remote.RegisterHosted(ctx, client, "http://localhost", "Test laptop", identity)
+	if err != nil || config.Owner != "" {
+		t.Fatalf("config=%+v err=%v", config, err)
+	}
+	if _, changed, completeErr := remote.CompleteOwnerLink(ctx, client, config, identity, manager); completeErr != nil || changed {
+		t.Fatalf("unclaimed link changed=%v err=%v", changed, completeErr)
+	}
+	code, expires, err := remote.CreateHostedLink(ctx, client, config, identity)
+	if err != nil || time.Until(expires) <= 0 {
+		t.Fatalf("code=%q expires=%v err=%v", code, expires, err)
+	}
+	if _, err = bridgeStore.ClaimDeviceLink(owner, code, ""); err != nil {
+		t.Fatal(err)
+	}
+	linked, changed, err := remote.CompleteOwnerLink(ctx, client, config, identity, manager)
+	if err != nil || !changed || linked.Owner != owner {
+		t.Fatalf("linked=%+v changed=%v err=%v", linked, changed, err)
+	}
+	if _, err = manager.GrantForPrincipal(owner); err != nil {
+		t.Fatalf("owner grant missing: %v", err)
+	}
+	return linked
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -157,8 +187,8 @@ func TestHostedConfigIsPrivateAndRejectsPublicHTTP(t *testing.T) {
 	if err := remote.SaveHostedConfig(path, remote.HostedConfig{URL: "http://public.example", DeviceID: "d", Owner: "o@example.com"}); err == nil {
 		t.Fatal("public HTTP bridge URL was accepted")
 	}
-	if err := remote.SaveHostedConfig(path, remote.HostedConfig{URL: "https://sessionsift.example", DeviceID: "d", Owner: "o@example.com"}); err != nil {
-		t.Fatal(err)
+	if err := remote.SaveHostedConfig(path, remote.HostedConfig{URL: "https://sessionsift.example", DeviceID: "d"}); err != nil {
+		t.Fatal("an unlinked device registration must be savable:", err)
 	}
 	loaded, err := remote.LoadHostedConfig(path)
 	if err != nil || loaded.URL != "https://sessionsift.example" {
@@ -181,10 +211,26 @@ func TestHostedClientReportsBridgeRefusals(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusBadRequest, Status: "400 Bad Request", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"refused"}`))}, nil
 	})}
-	if _, err := remote.EnrollHosted(context.Background(), client, "http://localhost", "code", "Laptop", identity); err == nil || !strings.Contains(err.Error(), "refused") {
-		t.Fatalf("enrollment error=%v", err)
+	if _, err := remote.RegisterHosted(context.Background(), client, "http://localhost", "Laptop", identity); err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("registration error=%v", err)
 	}
 	config := remote.HostedConfig{URL: "http://localhost", DeviceID: identity.ID, Owner: "owner@example.com"}
+	manager := mustManager(t)
+	if _, _, err := remote.CreateHostedLink(context.Background(), client, config, identity); err == nil {
+		t.Fatal("link refusal was ignored")
+	}
+	if _, err := remote.RegisterHostedSupport(context.Background(), client, config, identity, remote.SupportSession{ID: "support_x"}, "hash"); err == nil {
+		t.Fatal("support refusal was ignored")
+	}
+	if _, err := remote.ListHostedSupport(context.Background(), client, config, identity); err == nil {
+		t.Fatal("support list refusal was ignored")
+	}
+	if err := remote.RevokeHostedSupport(context.Background(), client, config, identity, "support_x"); err == nil {
+		t.Fatal("support revoke refusal was ignored")
+	}
+	if _, _, err := remote.CompleteOwnerLink(context.Background(), client, config, identity, manager); err == nil {
+		t.Fatal("device status refusal was ignored")
+	}
 	if err := remote.RegisterHostedGrant(context.Background(), client, config, identity, config.Owner, protocol.ReadOperations(), time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("grant refusal was ignored")
 	}

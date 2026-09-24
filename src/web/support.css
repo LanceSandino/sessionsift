@@ -1,0 +1,28 @@
+/* @module SupportStyles: code-based support card and bridge connection card. */
+.supportCard p,.bridgeCard p{color:var(--muted);font-size:13px;line-height:1.5;margin:6px 0 10px}
+.supportCard code,.bridgeCard code{background:#0b1426;border:1px solid var(--border);border-radius:6px;padding:1px 6px;color:#b8c8ff;overflow-wrap:anywhere}
+.supportForm,.bridgeForm{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;align-items:end}
+.bridgeForm p{grid-column:1/-1}
+.supportForm label,.bridgeForm label{display:grid;gap:5px;font-size:12px;color:var(--muted)}
+.supportForm select,.bridgeForm input{width:100%;min-width:0;background:#0a1323;border:1px solid #30415f;border-radius:9px;color:#ecf2ff;padding:9px 10px}
+.supportActive{display:grid;gap:8px;margin-top:4px;padding:14px;border-radius:14px;border:1px solid #2f4c73;background:linear-gradient(145deg,#0f1c33,#0b1528)}
+.supportActive.connected{border-color:#2b6b58;background:linear-gradient(145deg,#0e2a24,#0b1a1a)}
+.supportActive strong{font-size:14px}
+.supportActive small{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.supportCode{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.supportCode b{font:800 clamp(20px,4.5vw,30px) ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;color:#f4f7ff;overflow-wrap:anywhere}
+.supportCode small{flex-basis:100%}
+.supportCode button,.linkBlock button,.supportList button{border:1px solid var(--border);background:var(--panel2);border-radius:9px;padding:7px 12px;cursor:pointer}
+.supportCodeHidden{margin:0}
+.dangerButton{justify-self:start;border:1px solid #753345;background:#401c29;color:#ffb3c1;border-radius:10px;padding:8px 14px;font-weight:700;cursor:pointer}
+.dangerButton:disabled,.supportCode button:disabled{opacity:.6;cursor:wait}
+.bridgeFacts{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.bridgeFacts div{min-width:0;border:1px solid var(--border);background:#0c1526;border-radius:12px;padding:10px}
+.bridgeFacts small{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+.bridgeFacts b{display:block;font-size:13px;overflow-wrap:anywhere}
+.linkBlock,.supportList{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
+.supportList h4{margin:0 0 8px;font-size:13px}
+.pill.ready{border-color:#2b6b58;color:var(--mint)}
+.bridgeCard{margin-bottom:14px}
+.overviewGrid .supportCard{grid-column:1/-1}
+@media (max-width:640px){.supportForm,.bridgeForm{grid-template-columns:1fr}.supportForm .primaryButton,.bridgeForm .primaryButton,.dangerButton{width:100%}}

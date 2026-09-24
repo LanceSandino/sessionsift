@@ -17,6 +17,15 @@ args = ["mcp"]
 
 Reconnect the MCP server after SessionSift tools change; clients commonly cache the tool list for the life of a connection.
 
+## Claude Code local stdio
+
+```bash
+claude mcp add --scope user sessionsift -- sessionsift mcp
+```
+
+Claude Desktop uses the same command under `mcpServers` in
+`claude_desktop_config.json`: `"sessionsift": {"command": "sessionsift", "args": ["mcp"]}`.
+
 ## Remote HTTP clients
 
 The remote endpoint is `https://YOUR-BRIDGE/mcp`. It uses Streamable HTTP and
@@ -32,9 +41,11 @@ OAuth-capable Codex, ChatGPT, Claude, Cursor, VS Code, MCP Inspector, and custom
 clients can use the same endpoint. Cloudflare handles OAuth and the bridge plus
 Local Agent enforce the device-created grant.
 
-## ChatGPT OAuth MCP
+## ChatGPT and Claude OAuth MCP
 
-ChatGPT connects to `https://bridge.example.com/mcp`. This endpoint
+ChatGPT (developer-mode connectors) and Claude (Settings → Connectors → Add custom
+connector, or `claude mcp add --transport http sessionsift https://YOUR-BRIDGE/mcp`)
+connect to `https://bridge.example.com/mcp`. This endpoint
 uses current Streamable HTTP MCP through the official Go SDK and requires both:
 
 1. a valid Cloudflare Access `Cf-Access-Jwt-Assertion`, produced through
@@ -48,8 +59,10 @@ identity provider and enable Managed OAuth on the Access application. See the
 [deployment guide](deployment.md) for callbacks, lifetimes, environment values,
 and verification.
 
-ChatGPT conversation data remains supported separately through user-provided
-data exports; an MCP connection is not an export source.
+ChatGPT and Claude.ai conversation data remain supported separately through
+user-provided data exports (`sessionsift import-chatgpt`, `sessionsift
+import-claude`); an MCP connection is not an export source. Claude Code
+transcripts are imported locally from `~/.claude/projects`.
 
 ## Paging and bounds
 

@@ -1,6 +1,7 @@
 // Package bridge provides the durable, metadata-only relay used by the hosted
 // SessionSift connection service. Session content is retained only long enough
 // to complete a request and is never copied into the local SessionSift store.
+// @module BridgeStore persists workspaces, devices, grants, invitations, and encrypted transient relay tasks.
 package bridge
 
 import (
@@ -53,13 +54,6 @@ type Membership struct {
 type MCPTarget struct {
 	WorkspaceID string `json:"workspace_id"`
 	DeviceID    string `json:"device_id"`
-}
-
-type Enrollment struct {
-	Code        string    `json:"code"`
-	WorkspaceID string    `json:"workspace_id"`
-	Owner       string    `json:"owner"`
-	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 type Device struct {
@@ -224,6 +218,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "invitations", "last_viewed_at", "last_viewed_at TEXT"); err != nil {
+		return err
+	}
+	if err := s.migrateConnections(ctx); err != nil {
 		return err
 	}
 	indexes := []string{
@@ -464,6 +461,9 @@ func (s *Store) backfillWorkspaceScopes(ctx context.Context) error {
 }
 
 func (s *Store) CreateInvitation(deviceID, owner, invitee, sessionID, role string, expiresAt time.Time) (Invitation, string, error) {
+	if strings.TrimSpace(owner) == "" {
+		return Invitation{}, "", errors.New("link this device to an owner account before sending email invitations, or share a support code")
+	}
 	owner, err := normalizeEmail(owner)
 	if err != nil {
 		return Invitation{}, "", err
@@ -607,102 +607,6 @@ func scanInvitation(row rowScanner) (Invitation, string, error) {
 		invitation.RevokedAt = &value
 	}
 	return invitation, codeHash, nil
-}
-
-func (s *Store) CreateEnrollment(owner string) (Enrollment, error) {
-	owner, err := normalizeEmail(owner)
-	if err != nil {
-		return Enrollment{}, err
-	}
-	workspace, err := s.ensurePersonalWorkspace(context.Background(), owner)
-	if err != nil {
-		return Enrollment{}, err
-	}
-	return s.createEnrollment(owner, workspace.ID)
-}
-
-// CreateEnrollmentForWorkspace lets an owner attach a Local Agent to a chosen tenant.
-func (s *Store) CreateEnrollmentForWorkspace(owner, workspaceID string) (Enrollment, error) {
-	owner, err := normalizeEmail(owner)
-	if err != nil {
-		return Enrollment{}, err
-	}
-	if err = s.requireWorkspaceOwner(owner, workspaceID); err != nil {
-		return Enrollment{}, err
-	}
-	return s.createEnrollment(owner, workspaceID)
-}
-
-func (s *Store) createEnrollment(owner, workspaceID string) (Enrollment, error) {
-	code, err := randomCode()
-	if err != nil {
-		return Enrollment{}, err
-	}
-	now := time.Now().UTC()
-	expires := now.Add(enrollmentLifetime)
-	_, err = s.db.Exec(`INSERT INTO enrollments(code_hash,workspace_id,owner,expires_at,created_at) VALUES(?,?,?,?,?)`,
-		hashCode(code), workspaceID, owner, expires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
-	if err != nil {
-		return Enrollment{}, fmt.Errorf("create enrollment: %w", err)
-	}
-	return Enrollment{Code: code, WorkspaceID: workspaceID, Owner: owner, ExpiresAt: expires}, nil
-}
-
-func (s *Store) Enroll(code, name string, publicKey ed25519.PublicKey) (Device, error) {
-	if len(publicKey) != ed25519.PublicKeySize {
-		return Device{}, errors.New("invalid Ed25519 public key")
-	}
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 120 {
-		return Device{}, errors.New("device name must be between 1 and 120 characters")
-	}
-	tx, err := s.db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return Device{}, err
-	}
-	defer tx.Rollback()
-	var workspaceID, owner, expiresText string
-	var used sql.NullString
-	err = tx.QueryRow(`SELECT workspace_id,owner,expires_at,used_at FROM enrollments WHERE code_hash=?`, hashCode(code)).Scan(&workspaceID, &owner, &expiresText, &used)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Device{}, errors.New("invalid enrollment code")
-	}
-	if err != nil {
-		return Device{}, err
-	}
-	expires, err := time.Parse(time.RFC3339Nano, expiresText)
-	if err != nil || used.Valid || !time.Now().Before(expires) {
-		return Device{}, errors.New("enrollment code is expired or already used")
-	}
-	now := time.Now().UTC()
-	digest := sha256.Sum256(publicKey)
-	device := Device{
-		ID: "device_" + hex.EncodeToString(digest[:12]), WorkspaceID: workspaceID, Owner: owner, Name: name,
-		CreatedAt: now, LastSeen: now,
-	}
-	if _, err = tx.Exec(`INSERT INTO devices(id,workspace_id,owner,name,public_key,created_at,last_seen) VALUES(?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO NOTHING`,
-		device.ID, workspaceID, owner, name, []byte(publicKey), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		return Device{}, err
-	}
-	var existingOwner, existingWorkspace string
-	if err = tx.QueryRow(`SELECT owner,workspace_id FROM devices WHERE id=?`, device.ID).Scan(&existingOwner, &existingWorkspace); err != nil {
-		return Device{}, err
-	}
-	if existingOwner != owner || existingWorkspace != workspaceID {
-		return Device{}, errors.New("device identity is already enrolled in another workspace")
-	}
-	result, err := tx.Exec(`UPDATE enrollments SET used_at=? WHERE code_hash=? AND used_at IS NULL`, now.Format(time.RFC3339Nano), hashCode(code))
-	if err != nil {
-		return Device{}, err
-	}
-	if changed, _ := result.RowsAffected(); changed != 1 {
-		return Device{}, errors.New("enrollment code was already used")
-	}
-	if err = tx.Commit(); err != nil {
-		return Device{}, err
-	}
-	return device, nil
 }
 
 func (s *Store) RegisterGrant(deviceID, principal string, operations []protocol.Operation, expiresAt time.Time) (Grant, error) {
@@ -926,6 +830,9 @@ func (s *Store) Submit(principal, deviceID string, request protocol.Request) (Ta
 	}
 	if err = request.Validate(); err != nil {
 		return Task{}, err
+	}
+	if !protocol.Grantable(request.Operation) {
+		return Task{}, errors.New("operation is not available to clients")
 	}
 	if err = s.authorize(deviceID, principal, request.Operation); err != nil {
 		return Task{}, err
@@ -1236,7 +1143,7 @@ func (s *Store) authorizeInvitation(principal, invitationID, token string, reque
 	if err != nil {
 		return Invitation{}, err
 	}
-	if !operationIn(invitation.Operations, request.Operation) || !requestTargetsSession(request, invitation.SessionID) {
+	if !protocol.Grantable(request.Operation) || !operationIn(invitation.Operations, request.Operation) || !protocol.SessionScoped(request.Arguments, invitation.SessionID) {
 		return Invitation{}, errors.New("invitation capability or session denied")
 	}
 	return invitation, nil
@@ -1270,15 +1177,6 @@ func operationIn(operations []protocol.Operation, operation protocol.Operation) 
 	return false
 }
 
-func requestTargetsSession(request protocol.Request, sessionID string) bool {
-	var arguments map[string]any
-	if len(request.Arguments) == 0 || json.Unmarshal(request.Arguments, &arguments) != nil {
-		return false
-	}
-	target, ok := arguments["session_id"].(string)
-	return ok && target != "" && target == sessionID
-}
-
 func normalizeEmail(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	parsed, err := mail.ParseAddress(value)
@@ -1295,7 +1193,7 @@ func validateOperations(operations []protocol.Operation) ([]protocol.Operation, 
 	seen := make(map[protocol.Operation]struct{}, len(operations))
 	result := make([]protocol.Operation, 0, len(operations))
 	for _, operation := range operations {
-		if _, ok := protocol.DefinitionFor(operation); !ok {
+		if !protocol.Grantable(operation) {
 			return nil, fmt.Errorf("unknown operation %q", operation)
 		}
 		if _, ok := seen[operation]; ok {

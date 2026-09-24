@@ -1,8 +1,9 @@
 # SessionSift
 
-SessionSift is a local-first conversation profiler for Codex and ChatGPT. It
-imports live and archived Codex transcripts plus user-provided ChatGPT data
-exports, normalizes activity into SQLite, and shows where tokens, context,
+SessionSift is a local-first conversation profiler for Codex, Claude Code,
+ChatGPT, and Claude. It imports live and archived Codex transcripts, live Claude
+Code transcripts (including subagents), and user-provided ChatGPT and Claude.ai
+data exports, normalizes activity into SQLite, and shows where tokens, context,
 tools, retries, and corrections accumulated. Its findings link back to observed
 evidence; it does not assign a productivity score.
 
@@ -21,11 +22,12 @@ npm run build
 ./dist/sessionsift start
 ```
 
-Open <http://127.0.0.1:7777>. SessionSift imports both
+Open <http://127.0.0.1:7777>. SessionSift imports
 `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions` (normally under
-`~/.codex`). Re-running `import` processes only changed transcript files.
-Starting the app also watches those directories and refreshes changed sessions
-every three seconds.
+`~/.codex`) and Claude Code's `$CLAUDE_CONFIG_DIR/projects` (normally
+`~/.claude/projects`). Re-running `import` processes only changed transcript
+files. Starting the app also watches those directories and refreshes changed
+sessions every three seconds.
 
 Do not route a public tunnel to this port. Public deployments run the separate
 connection bridge on port 7780; the Local Agent stays on loopback and polls the
@@ -36,27 +38,58 @@ The main commands are:
 ```text
 sessionsift start
 sessionsift bridge
-sessionsift agent enroll <bridge-url> <code> [device-name]
+sessionsift agent connect <bridge-url> [device-name]
+sessionsift agent link [--no-wait]
 sessionsift agent share <email> [days]
 sessionsift agent revoke <email>
 sessionsift agent status
+sessionsift support start <session-id> [view|comment|review] [minutes]
+sessionsift support list
+sessionsift support end <support-id>
 sessionsift stop
 sessionsift status
 sessionsift backup
 sessionsift import
 sessionsift import-chatgpt <export.json-or-zip>
+sessionsift import-claude <export.json-or-zip>
 sessionsift sessions
 sessionsift inspect <session-id>
 sessionsift compare <session-a> <session-b>
 sessionsift mcp
 sessionsift doctor
-sessionsift setup enable
+sessionsift setup enable [claude]
 sessionsift setup hooks
+sessionsift setup claude
 sessionsift setup otel
 sessionsift setup chatgpt
 sessionsift setup mcp
 sessionsift setup undo
 ```
+
+## Claude Code and Claude conversations
+
+Claude Code transcripts are discovered automatically; each subagent transcript
+becomes its own session so it never overwrites its parent. Titles follow Claude
+Code's renamed title, then its generated title, then the first prompt. Thinking
+text is never stored. Claude reports cache reads separately; SessionSift counts
+them inside input tokens and as the cached share so cache ratios compare across
+providers, and each API response's usage is counted once.
+
+`sessionsift setup enable claude` merges SessionSift's non-blocking hook into the
+`hooks` object of `~/.claude/settings.json` (every other byte is preserved;
+symlinks and invalid JSON are refused). `sessionsift setup claude` prints the
+same settings, the Claude Code MCP command, and export instructions for review.
+
+For Claude.ai, request an export from **Settings → Privacy → Export data**, then:
+
+```bash
+sessionsift import-claude ~/Downloads/claude-export.zip
+```
+
+Only the conversations JSON is read; account, profile, and project files in the
+export are ignored. Attachment contents are not imported, only their count and
+file names. The path is remembered and re-imported when replaced
+(`SESSIONSIFT_CLAUDE_EXPORT` overrides it).
 
 ## ChatGPT conversations
 
@@ -90,15 +123,32 @@ buttons for jumping back through a long session.
 `sessionsift mcp` runs the ten-tool, read-only local MCP server over stdio,
 including privacy-safe aggregate analytics, recurring-correction patterns, and
 context recommendations.
-`sessionsift setup mcp` prints a ready-to-review Codex configuration. Session
+`sessionsift setup mcp` prints ready-to-review Codex, Claude Code, and Claude
+Desktop configuration. Session
 lists page explicitly and tool responses stay bounded and redacted. See the
 [MCP connection guide](docs/mcp-connection-guide.md) for local and scoped remote
 clients.
 
-## Remote review and collaboration
+## Remote support and collaboration
 
-The hosted connection console at `/` creates a ten-minute, single-use device
-enrollment code. The device owner grants or revokes an exact email locally with
+Connections work like remote-support tools: **the machine with the sessions
+generates the code, and the other person types it in.**
+
+1. Connect this device once: `sessionsift agent connect https://YOUR-BRIDGE` (or
+   **Remote access → Connect this device**). No account is needed.
+2. Open a conversation and choose **Generate support code** (or
+   `sessionsift support start <session-id>`). You get a code like
+   `7Q4M-2KXH-9TRD` that expires in ten minutes and works once.
+3. Your supporter signs in at `https://YOUR-BRIDGE/support`, enters the code, and
+   lands directly in that one conversation — nothing else on your machine is
+   reachable. Your device verifies the code itself before access starts.
+4. You see who is connected and can **Disconnect supporter** at any time; access
+   also ends when its chosen length (5 minutes to 8 hours) runs out.
+
+To use your own sessions from ChatGPT or Claude MCP, email invitations, or the
+hosted session list, link the device to your account with
+`sessionsift agent link` and enter the code it shows under **Add a device** at
+`/`. The device owner grants or revokes an exact email locally with
 `sessionsift agent share` and `sessionsift agent revoke`; grants are short-lived,
 read-only, and operation-scoped.
 
@@ -110,7 +160,7 @@ bridge persists its queue and registry in a private SQLite database.
 
 The public `/mcp` path uses the official MCP SDK, current protocol negotiation,
 Cloudflare Access signed identity, and a separate locally approved email grant
-for ChatGPT. Google can
+for ChatGPT and Claude custom connectors. Google can
 remain the upstream Access login provider while Cloudflare Managed OAuth
 supplies OAuth discovery, registration, consent, and refresh tokens. See the
 [deployment guide](docs/deployment.md) for the required routes and settings.
@@ -162,15 +212,21 @@ classified as internal reviews and hidden from normal session lists. Enable the
 
 ## Privacy model
 
-- The server binds only to `127.0.0.1:7777`.
+- The server binds only to `127.0.0.1:7777` and additionally refuses non-loopback
+  `Host` headers (DNS rebinding), cross-site browser mutations, non-JSON owner
+  writes, and framing.
 - Product state defaults to `~/.sessionsift` and can be moved with
   `SESSIONSIFT_HOME`.
-- Repository roots are hashed, home paths are normalized, and common API keys,
-  bearer tokens, database URLs, private keys, and credentials are redacted.
+- Repository roots and tool targets are hashed with a private per-installation
+  key, home and account paths are normalized in every encoding transcripts use,
+  and common API keys (OpenAI, Anthropic, GitHub, Stripe, Slack, Google, GitLab,
+  npm, Hugging Face, AWS), bearer tokens, database URLs, private keys, and named
+  secrets are redacted — including in titles and command signatures.
 - Tool payload previews and timelines are bounded; malformed or unknown Codex
   and ChatGPT records become safe metadata and parser warnings instead of
   breaking the import.
-- SessionSift does not read `~/.codex/auth.json` or upload the local database.
+- SessionSift does not read `~/.codex/auth.json`, `~/.claude/.credentials.json`,
+  or upload the local database.
   Only redacted responses to explicitly granted typed requests cross the bridge.
 - Remote features are inert until the owner creates and approves a pairing;
   grants are hashed or identity-bound at rest, expire, are rate-limited,
@@ -198,7 +254,10 @@ The test command enforces coverage floors and builds the embedded frontend.
 - `src/cmd/sessionsift`: CLI entrypoint
 - `src/internal`: collector, parser, storage, analyzers, and HTTP API
 - `src/internal/mcp`: local and HTTP MCP protocol adapter
-- `src/internal/remote`: device identity, pairing, grants, bridge, and collaboration
+- `src/internal/remote`: device identity, pairing, grants, support codes, bridge runtime, and collaboration
+- `src/internal/claude`: Claude Code discovery and transcript adapter, Claude.ai export adapter
+- `src/internal/supportcode`: code generation, normalization, and hashing
+- `src/internal/hooks`: provider-aware hook payload redaction
 - `src/web`: React and TypeScript source
 - `src/webui`: generated assets embedded in the Go binary
 
@@ -207,7 +266,7 @@ The test command enforces coverage floors and builds the embedded frontend.
 The localhost API exposes session lists, session details, turns, events,
 findings, metrics, comparisons, and privacy-safe analytics below `/api/v1`. Session lists exclude
 internal reviews by default; pass `include_internal=true` to include them. Hook
-ingestion is available at `/internal/hooks/codex`, OTLP logs at `/v1/logs`, OTLP
+ingestion is available at `/internal/hooks/codex` and `/internal/hooks/claude`, OTLP logs at `/v1/logs`, OTLP
 metrics at `/v1/metrics`, `/healthz` reports process liveness, and `/readyz`
 checks database integrity.
 

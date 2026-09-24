@@ -21,10 +21,14 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
 
-func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, inviter *remote.HostedInviter, w http.ResponseWriter, r *http.Request) {
+func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, hosted *remote.HostedRuntime, w http.ResponseWriter, r *http.Request) {
+	inviter := hosted.Inviter()
+	if hostedRoute(store, hosted, w, r) {
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/remote/status":
-		writeJSON(w, http.StatusOK, map[string]any{"device_id": identity.ID, "pending_pairings": manager.PendingPairings(), "connections": manager.Connections(), "oauth_grants": manager.OAuthGrants(), "invite_grants": manager.InviteGrants(), "oauth_configured": verifier != nil, "hosted_invites_configured": inviter != nil, "audit": manager.Audit()})
+		writeJSON(w, http.StatusOK, map[string]any{"device_id": identity.ID, "pending_pairings": manager.PendingPairings(), "connections": manager.Connections(), "oauth_grants": manager.OAuthGrants(), "invite_grants": manager.InviteGrants(), "oauth_configured": verifier != nil, "hosted_invites_configured": inviter != nil, "bridge": hosted.Status(), "audit": manager.AuditTail(500)})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/remote/invitations":
 		if inviter == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "hosted invitations are not configured"})

@@ -6,6 +6,7 @@ import {Collaboration} from "./Collaboration";
 import {Findings} from "./Findings";
 import {SessionContext} from "./SessionContext";
 import {SessionInvite} from "./SessionInvite";
+import {SupportShare} from "./SupportShare";
 import {Timeline} from "./Timeline";
 import {ToolUsage} from "./ToolUsage";
 import {Transcript} from "./Transcript";
@@ -38,7 +39,7 @@ export const SessionWorkspace=React.memo(function SessionWorkspace({session,onTu
     setActive(tabs[next].id);
     event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
   };
-  const panel=(tab:SessionTab)=>tab==="conversation"?<Transcript session={session}/>:tab==="timeline"?<Timeline session={session} onTurn={onTurn} expanded={expanded}/>:tab==="tools"?<div className="sessionSplitPanel"><ToolUsage session={session}/><Findings findings={session.findings||[]}/></div>:<div className="overviewScroll scrollViewport" aria-label="Session overview entries"><div className="overviewGrid"><SessionContext session={session}/><ActivityMix explorationRatio={metrics.exploration_ratio}/><SessionInvite key={session.id} session={session} sessionId={session.id} sessionTitle={session.title}/><Collaboration sessionId={session.id}/></div></div>;
+  const panel=(tab:SessionTab)=>tab==="conversation"?<Transcript session={session}/>:tab==="timeline"?<Timeline session={session} onTurn={onTurn} expanded={expanded}/>:tab==="tools"?<div className="sessionSplitPanel"><ToolUsage session={session}/><Findings findings={session.findings||[]}/></div>:<div className="overviewScroll scrollViewport" aria-label="Session overview entries"><div className="overviewGrid"><SessionContext session={session}/><ActivityMix explorationRatio={metrics.exploration_ratio}/><SupportShare key={`support-${session.id}`} sessionId={session.id} sessionTitle={session.title}/><SessionInvite key={session.id} session={session} sessionId={session.id} sessionTitle={session.title}/><Collaboration sessionId={session.id}/></div></div>;
   const secondary=active==="conversation"?"timeline":active;
   return <section className={`sessionWorkspace ${expanded?"expanded":""} ${split?"split":""}`} data-active={active} aria-label="Selected session workspace">
     <header className="workspaceHeader">

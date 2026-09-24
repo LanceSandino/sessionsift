@@ -1,8 +1,10 @@
 // Package ingest coordinates discovery, parsing, analysis, and transactional persistence.
+// @module IngestImporter imports Codex transcripts, user-supplied exports, and spooled hook events incrementally.
 package ingest
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/codex/state"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/transcript"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	"github.com/LanceSandino/sessionsift/src/internal/hooks"
 	"github.com/LanceSandino/sessionsift/src/internal/redact"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
@@ -33,14 +36,27 @@ type Result struct {
 	Warnings   []string `json:"warnings,omitempty"`
 }
 
+// exportFormat describes one provider's user-supplied conversation export.
+type exportFormat struct {
+	label   string
+	version string
+	parse   func(io.Reader) ([]domain.Session, error)
+}
+
 // ImportChatGPT imports conversations from a ChatGPT JSON export or export ZIP.
 func ImportChatGPT(ctx context.Context, store *storage.Store, path string) (Result, error) {
+	return importExport(ctx, store, path, exportFormat{label: "ChatGPT", version: domain.ChatGPTExportVersion, parse: chatgpt.Parse})
+}
+
+// importExport streams the conversations documents of an export, imports
+// changed conversations, and removes conversations absent from a complete read.
+func importExport(ctx context.Context, store *storage.Store, path string, format exportFormat) (Result, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return Result{}, err
 	}
 	if info.Size() > maxChatGPTExportBytes {
-		return Result{}, fmt.Errorf("ChatGPT export exceeds 1 GiB")
+		return Result{}, fmt.Errorf("%s export exceeds 1 GiB", format.label)
 	}
 	documents, err := chatGPTDocuments(path)
 	if err != nil {
@@ -52,7 +68,7 @@ func ImportChatGPT(ctx context.Context, store *storage.Store, path string) (Resu
 		}
 	}()
 	result := Result{}
-	fingerprint := fmt.Sprintf("%s:%d:%d", domain.ChatGPTExportVersion, info.Size(), info.ModTime().UnixNano())
+	fingerprint := fmt.Sprintf("%s:%d:%d", format.version, info.Size(), info.ModTime().UnixNano())
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
 		return result, err
@@ -63,7 +79,7 @@ func ImportChatGPT(ctx context.Context, store *storage.Store, path string) (Resu
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		sessions, parseErr := chatgpt.Parse(document.reader)
+		sessions, parseErr := format.parse(document.reader)
 		document.close()
 		if parseErr != nil {
 			result.Failed++
@@ -96,10 +112,10 @@ func ImportChatGPT(ctx context.Context, store *storage.Store, path string) (Resu
 		}
 	}
 	if result.Discovered == 0 && result.Failed == 0 {
-		return result, fmt.Errorf("no ChatGPT conversations found")
+		return result, fmt.Errorf("no %s conversations found", format.label)
 	}
 	if result.Failed == 0 {
-		if err := store.ReconcileChatGPTSource(ctx, sourceHash, sessionIDs); err != nil {
+		if err := store.ReconcileExportSource(ctx, sourceHash, sessionIDs); err != nil {
 			return result, err
 		}
 	}
@@ -177,35 +193,18 @@ func ImportSpool(ctx context.Context, store *storage.Store, directory string) (i
 			return imported, readErr
 		}
 		var payload map[string]any
-		if json.Unmarshal(data, &payload) != nil {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if decoder.Decode(&payload) != nil {
 			continue
 		}
-		sessionID, _ := payload["session_id"].(string)
-		if sessionID == "" {
+		provider := hooks.Codex
+		if strings.HasPrefix(entry.Name(), "claude-") {
+			provider = hooks.ClaudeCode
+		}
+		event, normalizeErr := hooks.Normalize(provider, payload, time.Now().UTC(), redact.Hash(entry.Name()+string(data)), true)
+		if normalizeErr != nil {
 			continue
-		}
-		turnID, _ := payload["turn_id"].(string)
-		kind, _ := payload["hook_event_name"].(string)
-		if kind == "" {
-			kind = "hook"
-		}
-		redacted := map[string]any{}
-		for key, value := range payload {
-			if key == "prompt" || key == "tool_input" || key == "tool_response" {
-				redacted[key] = redact.Text(fmt.Sprint(value), 2_000)
-			} else if key != "transcript_path" && key != "cwd" {
-				redacted[key] = value
-			}
-		}
-		event := domain.Event{
-			ID:              redact.Hash(entry.Name() + string(data))[:24],
-			SessionID:       sessionID,
-			TurnID:          turnID,
-			Timestamp:       time.Now().UTC(),
-			EventType:       "hook",
-			EventSubtype:    kind,
-			Source:          "hook_spool",
-			PayloadRedacted: redacted,
 		}
 		if err := store.AppendHookEvent(ctx, event); err != nil {
 			return imported, err
@@ -270,6 +269,7 @@ func ImportAll(ctx context.Context, store *storage.Store, codexHome string) (Res
 			continue
 		}
 		session.Findings = findings
+		scrubWorkspace(&session)
 		if err := store.SaveImport(ctx, pathHash, quickFingerprint, session); err != nil {
 			return result, err
 		}

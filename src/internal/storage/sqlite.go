@@ -1,4 +1,5 @@
 // Package storage persists normalized SessionSift records in local SQLite.
+// @module SQLiteStore persists normalized sessions and serves isolated interactive reads.
 package storage
 
 import (
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	"github.com/LanceSandino/sessionsift/src/internal/redact"
 	_ "modernc.org/sqlite"
 )
 
@@ -141,8 +143,14 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-// ReconcileChatGPTSource records the current export membership and removes chats no longer present.
+// ReconcileChatGPTSource is retained for callers of the original ChatGPT-only name.
 func (s *Store) ReconcileChatGPTSource(ctx context.Context, sourceHash string, sessionIDs []string) error {
+	return s.ReconcileExportSource(ctx, sourceHash, sessionIDs)
+}
+
+// ReconcileExportSource records the current membership of one user-supplied
+// export (ChatGPT or Claude) and removes chats no longer present in any export.
+func (s *Store) ReconcileExportSource(ctx context.Context, sourceHash string, sessionIDs []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -317,7 +325,7 @@ func (s *Store) AppendHookEvent(ctx context.Context, event domain.Event) error {
 	var existing string
 	err = tx.QueryRowContext(ctx, `SELECT payload_json FROM sessions WHERE id=?`, event.SessionID).Scan(&existing)
 	if errors.Is(err, sql.ErrNoRows) {
-		session = domain.Session{ID: event.SessionID, ExternalSessionID: event.SessionID, Title: "Live Codex session", Kind: domain.DeveloperSession, Source: domain.SourceCodex, StartedAt: event.Timestamp, EndedAt: event.Timestamp, Status: "live", ParserVersion: domain.ParserVersion}
+		session = liveSession(event)
 	} else if err != nil {
 		return err
 	} else if err = json.Unmarshal([]byte(existing), &session); err != nil {
@@ -341,7 +349,7 @@ func (s *Store) AppendHookEvent(ctx context.Context, event domain.Event) error {
 		session.Model = model
 	}
 	if event.EventSubtype == "UserPromptSubmit" {
-		if prompt, ok := event.PayloadRedacted["prompt"].(string); ok && prompt != "" && session.Title == "Live Codex session" {
+		if prompt, ok := event.PayloadRedacted["prompt"].(string); ok && prompt != "" && session.Title == liveTitle(session.Source) {
 			session.Title = boundedTitle(prompt)
 		}
 	}
@@ -358,6 +366,23 @@ func (s *Store) AppendHookEvent(ctx context.Context, event domain.Event) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// liveSession creates the placeholder a hook event attaches to until the
+// authoritative transcript import replaces it.
+func liveSession(event domain.Event) domain.Session {
+	source, external, version := domain.SourceCodex, event.SessionID, domain.ParserVersion
+	if strings.HasPrefix(event.SessionID, "claude:") {
+		source, external, version = domain.SourceClaudeCode, strings.TrimPrefix(event.SessionID, "claude:"), domain.ClaudeCodeParserVersion
+	}
+	return domain.Session{ID: event.SessionID, ExternalSessionID: external, Title: liveTitle(source), TitleSource: "live", Kind: domain.DeveloperSession, Source: source, StartedAt: event.Timestamp, EndedAt: event.Timestamp, Status: "live", ParserVersion: version}
+}
+
+func liveTitle(source domain.SessionSource) string {
+	if source == domain.SourceClaudeCode {
+		return "Live Claude Code session"
+	}
+	return "Live Codex session"
 }
 
 func applyOTelUsage(session *domain.Session, event domain.Event) {
@@ -421,11 +446,7 @@ func containsEvent(events []domain.Event, id string) bool {
 }
 
 func boundedTitle(value string) string {
-	value = strings.Join(strings.Fields(value), " ")
-	if len(value) > 80 {
-		return value[:77] + "…"
-	}
-	return value
+	return redact.Title(value, 80)
 }
 
 func formatTime(value time.Time) string {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/LanceSandino/sessionsift/src/internal/accessauth"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
+	"github.com/LanceSandino/sessionsift/src/internal/supportcode"
 )
 
 func TestHandlerSeparatesHumanAndDeviceTrustBoundaries(t *testing.T) {
@@ -38,31 +39,31 @@ func TestHandlerSeparatesHumanAndDeviceTrustBoundaries(t *testing.T) {
 		t.Fatalf("root status=%d", unauthorized.Code)
 	}
 
-	enrollmentRequest := httptest.NewRequest(http.MethodPost, "/api/v1/enrollments", strings.NewReader(`{}`))
-	enrollmentRequest.Header.Set("Cf-Access-Jwt-Assertion", "valid")
-	enrollment := httptest.NewRecorder()
-	handler.ServeHTTP(enrollment, enrollmentRequest)
-	if enrollment.Code != http.StatusCreated {
-		t.Fatalf("enrollment status=%d body=%s", enrollment.Code, enrollment.Body.String())
-	}
-	var created Enrollment
-	if err = json.Unmarshal(enrollment.Body.Bytes(), &created); err != nil || created.Code == "" {
-		t.Fatalf("enrollment=%+v err=%v", created, err)
-	}
-
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	proofMessage, _ := json.Marshal([]string{"sessionsift.enroll.v1", created.Code, "Laptop", base64.RawURLEncoding.EncodeToString(public)})
-	enrollBody, _ := json.Marshal(map[string]string{
-		"code": created.Code, "name": "Laptop", "public_key": base64.RawURLEncoding.EncodeToString(public),
-		"proof": base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, proofMessage)),
-	})
-	enroll := httptest.NewRecorder()
-	handler.ServeHTTP(enroll, httptest.NewRequest(http.MethodPost, "/agent/v1/enroll", bytes.NewReader(enrollBody)))
-	if enroll.Code != http.StatusCreated {
-		t.Fatalf("agent enroll status=%d body=%s", enroll.Code, enroll.Body.String())
+	device := registerOverHTTP(t, handler, "Laptop", public, private)
+	if device.Owner != "" {
+		t.Fatalf("self-registered device already owned: %+v", device)
 	}
-	var device Device
-	_ = json.Unmarshal(enroll.Body.Bytes(), &device)
+	code, _ := supportcode.Generate()
+	codeHash, _ := supportcode.Hash(supportcode.Link, code)
+	linkBody, _ := json.Marshal(map[string]any{"code_hash": codeHash, "expires_at": time.Now().Add(5 * time.Minute).UTC()})
+	link := httptest.NewRecorder()
+	handler.ServeHTTP(link, signedBridgeRequest(t, private, device.ID, http.MethodPost, "/agent/v1/links", linkBody))
+	if link.Code != http.StatusCreated {
+		t.Fatalf("link status=%d body=%s", link.Code, link.Body.String())
+	}
+	claimRequest := httptest.NewRequest(http.MethodPost, "/api/v1/devices/link", strings.NewReader(`{"code":"`+code+`"}`))
+	claimRequest.Header.Set("Cf-Access-Jwt-Assertion", "valid")
+	claim := httptest.NewRecorder()
+	handler.ServeHTTP(claim, claimRequest)
+	if claim.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", claim.Code, claim.Body.String())
+	}
+	status := httptest.NewRecorder()
+	handler.ServeHTTP(status, signedBridgeRequest(t, private, device.ID, http.MethodGet, "/agent/v1/device", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"owner":"owner@example.com"`) {
+		t.Fatalf("device status=%d body=%s", status.Code, status.Body.String())
+	}
 
 	grantBody, _ := json.Marshal(map[string]any{
 		"principal": "owner@example.com", "operations": []protocol.Operation{protocol.SessionList},
@@ -150,7 +151,10 @@ func TestPrivateRoutesFailClosedWithoutVerifiedUserIdentity(t *testing.T) {
 		{http.MethodGet, "/api/v1/mcp-devices", ""},
 		{http.MethodGet, "/api/v1/mcp-target", ""},
 		{http.MethodPut, "/api/v1/mcp-target", `{"workspace_id":"workspace","device_id":"device"}`},
-		{http.MethodPost, "/api/v1/enrollments", `{}`},
+		{http.MethodPost, "/api/v1/devices/link", `{"code":"0000-0000-0000"}`},
+		{http.MethodGet, "/support", ""},
+		{http.MethodPost, "/support/connect", `{"code":"0000-0000-0000"}`},
+		{http.MethodGet, "/support/support_0123456789abcdef", ""},
 		{http.MethodPost, "/api/v1/protocol", `{"request":{"version":1,"request_id":"guard","operation":"session.list","arguments":{}}}`},
 		{http.MethodPost, "/mcp", `{}`},
 		{http.MethodGet, "/invite/invite_private", ""},
@@ -217,9 +221,14 @@ func TestWorkspaceLifecycleAPIsRemainOwnerScoped(t *testing.T) {
 	if missing.Code < http.StatusBadRequest {
 		t.Fatalf("second remove=%d body=%s", missing.Code, missing.Body.String())
 	}
-	enrollment := request("owner", http.MethodPost, "/api/v1/enrollments", `{"workspace_id":"`+workspace.ID+`"}`)
-	if enrollment.Code != http.StatusCreated || !strings.Contains(enrollment.Body.String(), workspace.ID) {
-		t.Fatalf("enrollment=%d body=%s", enrollment.Code, enrollment.Body.String())
+	teamKey, _, _ := ed25519.GenerateKey(rand.Reader)
+	teamDevice, err := store.RegisterDevice("Team laptop", teamKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := request("owner", http.MethodPost, "/api/v1/devices/link", `{"code":"`+testLinkCode(t, store, teamDevice.ID)+`","workspace_id":"`+workspace.ID+`"}`)
+	if linked.Code != http.StatusOK || !strings.Contains(linked.Body.String(), workspace.ID) {
+		t.Fatalf("link=%d body=%s", linked.Code, linked.Body.String())
 	}
 }
 
@@ -247,7 +256,7 @@ func TestHostedPagesUseLayeredSiftAndBoundedControlCenters(t *testing.T) {
 	}
 }
 
-func TestHandlerOperationalRoutesAndEnrollmentRateLimit(t *testing.T) {
+func TestHandlerOperationalRoutesAndRegistrationRateLimit(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -272,7 +281,7 @@ func TestHandlerOperationalRoutesAndEnrollmentRateLimit(t *testing.T) {
 		t.Fatalf("unconfigured verifier status=%d", private.Code)
 	}
 	for attempt := 0; attempt < 9; attempt++ {
-		request := httptest.NewRequest(http.MethodPost, "/agent/v1/enroll", strings.NewReader(`{}`))
+		request := httptest.NewRequest(http.MethodPost, "/agent/v1/register", strings.NewReader(`{}`))
 		request.RemoteAddr = "192.0.2.10:2345"
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
@@ -337,9 +346,8 @@ func TestHandlerRequiresExplicitTenantTargetWhenIdentityHasMultipleDevices(t *te
 func TestInvitationAcceptanceSetsSecureSessionAndServesOnlyInvitee(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	defer store.Close()
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	invitation, code, err := store.CreateInvitation(device.ID, "owner@example.com", "reviewer@example.com", "session-a", "view", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -386,9 +394,8 @@ func TestInvitationAcceptanceSetsSecureSessionAndServesOnlyInvitee(t *testing.T)
 func TestInvitationAgentLifecycleAndSessionProtocol(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	defer store.Close()
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	verifier := accessauth.VerifierFunc(func(_ context.Context, assertion string) (accessauth.Principal, error) {
 		if assertion == "reviewer" {
 			return accessauth.Principal{Subject: "reviewer-sub", Email: "reviewer@example.com"}, nil
@@ -583,9 +590,8 @@ func TestHandlerHealthConsoleDevicesMCPAndRevocation(t *testing.T) {
 		t.Fatalf("empty devices=%d body=%s", emptyDevices.Code, emptyDevices.Body.String())
 	}
 
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	_, _ = store.RegisterGrant(device.ID, "owner@example.com", protocol.ReadOperations(), time.Now().Add(time.Hour))
 	devicesRequest := httptest.NewRequest(http.MethodGet, "/api/v1/devices", nil)
 	devicesRequest.Header.Set("Cf-Access-Jwt-Assertion", "valid")
@@ -631,18 +637,18 @@ func TestHandlerHealthConsoleDevicesMCPAndRevocation(t *testing.T) {
 	}
 }
 
-func TestHandlerBoundsEnrollmentAndBadRequests(t *testing.T) {
+func TestHandlerBoundsRegistrationAndBadRequests(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	defer store.Close()
 	handler := NewHandler(store, nil, "")
 	bad := httptest.NewRecorder()
-	handler.ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/agent/v1/enroll", strings.NewReader(`{"unexpected":true}`)))
+	handler.ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/agent/v1/register", strings.NewReader(`{"unexpected":true}`)))
 	if bad.Code != http.StatusBadRequest {
-		t.Fatalf("bad enrollment=%d", bad.Code)
+		t.Fatalf("bad registration=%d", bad.Code)
 	}
 	for attempt := 0; attempt < 8; attempt++ {
 		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "/agent/v1/enroll", strings.NewReader(`{"code":"bad","name":"Laptop","public_key":"bad"}`))
+		request := httptest.NewRequest(http.MethodPost, "/agent/v1/register", strings.NewReader(`{"name":"Laptop","public_key":"bad"}`))
 		handler.ServeHTTP(recorder, request)
 		if attempt == 7 && recorder.Code != http.StatusTooManyRequests {
 			t.Fatalf("attempt %d status=%d", attempt+1, recorder.Code)
@@ -653,9 +659,8 @@ func TestHandlerBoundsEnrollmentAndBadRequests(t *testing.T) {
 func TestHandlerRejectsMalformedSignedDeviceActionsAndRelayDenial(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	defer store.Close()
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	handler := NewHandler(store, nil, "")
 
 	for _, test := range []struct {
@@ -678,6 +683,24 @@ func TestHandlerRejectsMalformedSignedDeviceActionsAndRelayDenial(t *testing.T) 
 	if response.Status != protocol.StatusError || response.Error == nil || response.Error.Code != "relay_denied" {
 		t.Fatalf("relay response=%+v", response)
 	}
+}
+
+// registerOverHTTP self-registers a device with key-possession proof.
+func registerOverHTTP(t *testing.T, handler http.Handler, name string, public ed25519.PublicKey, private ed25519.PrivateKey) Device {
+	t.Helper()
+	encoded := base64.RawURLEncoding.EncodeToString(public)
+	proofMessage, _ := json.Marshal([]string{"sessionsift.register.v1", name, encoded})
+	body, _ := json.Marshal(map[string]string{"name": name, "public_key": encoded, "proof": base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, proofMessage))})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/agent/v1/register", bytes.NewReader(body)))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("register status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var device Device
+	if err := json.Unmarshal(recorder.Body.Bytes(), &device); err != nil || device.ID == "" {
+		t.Fatalf("device=%+v err=%v", device, err)
+	}
+	return device
 }
 
 func signedBridgeRequest(t *testing.T, private ed25519.PrivateKey, deviceID, method, path string, body []byte) *http.Request {

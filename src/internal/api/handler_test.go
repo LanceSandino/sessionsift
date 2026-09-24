@@ -35,7 +35,7 @@ func testStore(t *testing.T) *storage.Store {
 func TestSessionAndCompareRoutes(t *testing.T) {
 	handler := Handler(testStore(t))
 	for _, target := range []string{"/api/v1/sessions", "/api/v1/sessions/s1", "/api/v1/sessions/s1/turns", "/api/v1/sessions/s1/events", "/api/v1/sessions/s1/findings", "/api/v1/sessions/s1/metrics", "/api/v1/compare?a=s1&b=s1", "/healthz"} {
-		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req := localRequest(http.MethodGet, target, nil)
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, req)
 		if res.Code != http.StatusOK {
@@ -61,19 +61,71 @@ func TestHostedInvitationOwnerRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, _ := bridgeStore.CreateEnrollment("owner@example.com")
-	config, err := remote.EnrollHosted(context.Background(), client, "https://sessionsift.example", enrollment.Code, "Laptop", identity)
+	manager, _ := remote.OpenManager(filepath.Join(state, "remote.json"))
+	store := testStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hosted, err := remote.NewHostedRuntime(ctx, filepath.Join(state, "hosted.json"), identity, manager, store, client, func(error) {})
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, _ := remote.OpenManager(filepath.Join(state, "remote.json"))
-	inviter := remote.NewHostedInviter(client, config, identity, manager)
-	handler := HandlerWithHostedInvites(testStore(t), manager, identity, inviter)
+	defer hosted.Stop()
+	handler := HandlerWithHostedRuntime(store, manager, identity, hosted)
 
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
+		handler.ServeHTTP(recorder, localRequest(method, path, strings.NewReader(body)))
 		return recorder
+	}
+	if status := call(http.MethodGet, "/api/v1/remote/status", ""); status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"hosted_invites_configured":false`) {
+		t.Fatalf("status before connecting=%d body=%s", status.Code, status.Body.String())
+	}
+	if early := call(http.MethodPost, "/api/v1/remote/support", `{"session_id":"s1","role":"view","minutes":30}`); early.Code != http.StatusBadRequest {
+		t.Fatalf("support before connecting=%d body=%s", early.Code, early.Body.String())
+	}
+	connected := call(http.MethodPost, "/api/v1/remote/bridge/connect", `{"url":"https://sessionsift.example","name":"Laptop"}`)
+	if connected.Code != http.StatusOK || !strings.Contains(connected.Body.String(), `"connected":true`) {
+		t.Fatalf("connect=%d body=%s", connected.Code, connected.Body.String())
+	}
+	if unlinked := call(http.MethodPost, "/api/v1/remote/invitations", `{"invitee":"reviewer@example.com","session_id":"s1","role":"view","duration_hours":1}`); unlinked.Code != http.StatusBadRequest || !strings.Contains(unlinked.Body.String(), "support code") {
+		t.Fatalf("unlinked invitation=%d body=%s", unlinked.Code, unlinked.Body.String())
+	}
+	offer := call(http.MethodPost, "/api/v1/remote/support", `{"session_id":"s1","role":"view","minutes":30}`)
+	var supportOffer struct {
+		Code    string `json:"code"`
+		Support struct {
+			ID string `json:"id"`
+		} `json:"support"`
+	}
+	if offer.Code != http.StatusCreated || json.Unmarshal(offer.Body.Bytes(), &supportOffer) != nil || supportOffer.Code == "" {
+		t.Fatalf("support offer=%d body=%s", offer.Code, offer.Body.String())
+	}
+	if missingSession := call(http.MethodPost, "/api/v1/remote/support", `{"session_id":"missing","role":"view","minutes":30}`); missingSession.Code != http.StatusNotFound {
+		t.Fatalf("missing session support=%d", missingSession.Code)
+	}
+	listedSupport := call(http.MethodGet, "/api/v1/remote/support", "")
+	if listedSupport.Code != http.StatusOK || !strings.Contains(listedSupport.Body.String(), supportOffer.Support.ID) || strings.Contains(listedSupport.Body.String(), supportOffer.Code) {
+		t.Fatalf("support list=%d body=%s", listedSupport.Code, listedSupport.Body.String())
+	}
+	ended := call(http.MethodPost, "/api/v1/remote/support/end", `{"id":"`+supportOffer.Support.ID+`"}`)
+	if ended.Code != http.StatusOK || !strings.Contains(ended.Body.String(), `"status":"ended"`) {
+		t.Fatalf("support end=%d body=%s", ended.Code, ended.Body.String())
+	}
+	link := call(http.MethodPost, "/api/v1/remote/bridge/link", "")
+	var linkCode struct {
+		Code string `json:"code"`
+	}
+	if link.Code != http.StatusCreated || json.Unmarshal(link.Body.Bytes(), &linkCode) != nil || linkCode.Code == "" {
+		t.Fatalf("link=%d body=%s", link.Code, link.Body.String())
+	}
+	if _, err = bridgeStore.ClaimDeviceLink("owner@example.com", linkCode.Code, ""); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed := call(http.MethodPost, "/api/v1/remote/bridge/refresh", ""); refreshed.Code != http.StatusOK || !strings.Contains(refreshed.Body.String(), `"owner":"owner@example.com"`) {
+		t.Fatalf("refresh=%d body=%s", refreshed.Code, refreshed.Body.String())
+	}
+	if bridgeStatus := call(http.MethodGet, "/api/v1/remote/bridge", ""); !strings.Contains(bridgeStatus.Body.String(), `"owner":"owner@example.com"`) {
+		t.Fatalf("bridge status body=%s", bridgeStatus.Body.String())
 	}
 	if status := call(http.MethodGet, "/api/v1/remote/status", ""); status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"hosted_invites_configured":true`) {
 		t.Fatalf("status=%d body=%s", status.Code, status.Body.String())
@@ -98,10 +150,10 @@ func TestHostedInvitationOwnerRoutes(t *testing.T) {
 		t.Fatalf("revoke status=%d body=%s", revoked.Code, revoked.Body.String())
 	}
 
-	unconfigured := HandlerWithHostedInvites(testStore(t), manager, identity, nil)
-	for _, path := range []string{"/api/v1/remote/invitations", "/api/v1/remote/invitations/revoke"} {
+	unconfigured := HandlerWithHostedRuntime(testStore(t), manager, identity, nil)
+	for _, path := range []string{"/api/v1/remote/invitations", "/api/v1/remote/invitations/revoke", "/api/v1/remote/bridge", "/api/v1/remote/support"} {
 		recorder := httptest.NewRecorder()
-		unconfigured.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		unconfigured.ServeHTTP(recorder, localRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusServiceUnavailable && recorder.Code != http.StatusNotFound {
 			t.Fatalf("unconfigured %s status=%d", path, recorder.Code)
 		}
@@ -121,7 +173,7 @@ func TestSessionListHidesInternalReviewsByDefault(t *testing.T) {
 		want   int
 	}{{"/api/v1/sessions", 1}, {"/api/v1/sessions?include_internal=true", 2}} {
 		res := httptest.NewRecorder()
-		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, item.target, nil))
+		handler.ServeHTTP(res, localRequest(http.MethodGet, item.target, nil))
 		var sessions []domain.Session
 		if err := json.Unmarshal(res.Body.Bytes(), &sessions); err != nil || len(sessions) != item.want {
 			t.Fatalf("target=%s sessions=%d err=%v body=%s", item.target, len(sessions), err, res.Body.String())
@@ -133,13 +185,13 @@ func TestHookReceiverRedactsAndValidates(t *testing.T) {
 	store := testStore(t)
 	handler := Handler(store)
 	body := `{"session_id":"live","turn_id":"turn","hook_event_name":"PostToolUse","tool_response":"Bearer abcdefghijklmnopqrstuvwxyz"}`
-	req := httptest.NewRequest(http.MethodPost, "/internal/hooks/codex", strings.NewReader(body))
+	req := localRequest(http.MethodPost, "/internal/hooks/codex", strings.NewReader(body))
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
 	}
-	bad := httptest.NewRequest(http.MethodPost, "/internal/hooks/codex", strings.NewReader(`{"x":1}`))
+	bad := localRequest(http.MethodPost, "/internal/hooks/codex", strings.NewReader(`{"x":1}`))
 	badRes := httptest.NewRecorder()
 	handler.ServeHTTP(badRes, bad)
 	if badRes.Code != http.StatusBadRequest {
@@ -149,13 +201,13 @@ func TestHookReceiverRedactsAndValidates(t *testing.T) {
 
 func TestMissingAndStaticRoutes(t *testing.T) {
 	handler := Handler(testStore(t))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/missing", nil)
+	req := localRequest(http.MethodGet, "/api/v1/sessions/missing", nil)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("status=%d", res.Code)
 	}
-	home := httptest.NewRequest(http.MethodGet, "/", nil)
+	home := localRequest(http.MethodGet, "/", nil)
 	homeRes := httptest.NewRecorder()
 	handler.ServeHTTP(homeRes, home)
 	if homeRes.Code != http.StatusOK || !strings.Contains(homeRes.Body.String(), "SessionSift") {
@@ -173,7 +225,7 @@ func TestWebShellRefreshCannotUseStaleBootAssets(t *testing.T) {
 
 	for _, target := range []string{"/", "/sessions/s1", "/remote-access"} {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		handler.ServeHTTP(response, localRequest(http.MethodGet, target, nil))
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s status=%d body=%s", target, response.Code, response.Body.String())
 		}
@@ -186,7 +238,7 @@ func TestWebShellRefreshCannotUseStaleBootAssets(t *testing.T) {
 	}
 
 	home := httptest.NewRecorder()
-	handler.ServeHTTP(home, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(home, localRequest(http.MethodGet, "/", nil))
 	start := strings.Index(home.Body.String(), `src="/assets/`)
 	if start < 0 {
 		t.Fatal("built index does not reference a hashed script")
@@ -198,7 +250,7 @@ func TestWebShellRefreshCannotUseStaleBootAssets(t *testing.T) {
 	}
 	assetPath := home.Body.String()[start : start+end]
 	asset := httptest.NewRecorder()
-	handler.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, assetPath, nil))
+	handler.ServeHTTP(asset, localRequest(http.MethodGet, assetPath, nil))
 	if asset.Code != http.StatusOK {
 		t.Fatalf("asset %s status=%d", assetPath, asset.Code)
 	}
@@ -207,7 +259,7 @@ func TestWebShellRefreshCannotUseStaleBootAssets(t *testing.T) {
 	}
 
 	stale := httptest.NewRecorder()
-	handler.ServeHTTP(stale, httptest.NewRequest(http.MethodGet, "/assets/index-stale.js", nil))
+	handler.ServeHTTP(stale, localRequest(http.MethodGet, "/assets/index-stale.js", nil))
 	if stale.Code != http.StatusNotFound {
 		t.Fatalf("stale asset status=%d", stale.Code)
 	}
@@ -224,7 +276,7 @@ func TestBadRoutesAndOTelAcceptance(t *testing.T) {
 		body         string
 	}{{http.MethodGet, "/api/v1/compare?a=missing&b=s1", 400, ""}, {http.MethodGet, "/api/v1/sessions/s1/nope", 404, ""}, {http.MethodPost, "/internal/hooks/codex", 400, "not-json"}, {http.MethodPost, "/v1/logs", 202, ""}, {http.MethodPost, "/v1/metrics", 202, ""}, {http.MethodDelete, "/nope", 404, ""}}
 	for _, item := range cases {
-		req := httptest.NewRequest(item.method, item.path, strings.NewReader(item.body))
+		req := localRequest(item.method, item.path, strings.NewReader(item.body))
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, req)
 		if res.Code != item.status {
@@ -237,12 +289,12 @@ func TestTypedSessionProtocolEndpoint(t *testing.T) {
 	handler := Handler(testStore(t))
 	request := `{"version":1,"request_id":"req_http","operation":"session.list","arguments":{"include_internal":false}}`
 	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/api/v1/protocol", strings.NewReader(request)))
+	handler.ServeHTTP(res, localRequest(http.MethodPost, "/api/v1/protocol", strings.NewReader(request)))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"status":"ok"`) || !strings.Contains(res.Body.String(), `"title":"Test session"`) {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
 	}
 	unsafe := httptest.NewRecorder()
-	handler.ServeHTTP(unsafe, httptest.NewRequest(http.MethodPost, "/api/v1/protocol", strings.NewReader(`{"version":1,"request_id":"req_unsafe","operation":"shell.exec"}`)))
+	handler.ServeHTTP(unsafe, localRequest(http.MethodPost, "/api/v1/protocol", strings.NewReader(`{"version":1,"request_id":"req_unsafe","operation":"shell.exec"}`)))
 	if unsafe.Code != http.StatusBadRequest || !strings.Contains(unsafe.Body.String(), `"status":"invalid_request"`) {
 		t.Fatalf("unsafe status=%d body=%s", unsafe.Code, unsafe.Body.String())
 	}
@@ -252,7 +304,7 @@ func TestClosedStoreReturnsInternalError(t *testing.T) {
 	store := testStore(t)
 	_ = store.Close()
 	handler := Handler(store)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	req := localRequest(http.MethodGet, "/api/v1/sessions", nil)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusInternalServerError {
@@ -264,18 +316,18 @@ func TestReadinessChecksDatabaseAndLivenessDoesNot(t *testing.T) {
 	store := testStore(t)
 	handler := Handler(store)
 	ready := httptest.NewRecorder()
-	handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	handler.ServeHTTP(ready, localRequest(http.MethodGet, "/readyz", nil))
 	if ready.Code != http.StatusOK || !strings.Contains(ready.Body.String(), `"status":"ready"`) {
 		t.Fatalf("ready=%d %s", ready.Code, ready.Body.String())
 	}
 	_ = store.Close()
 	unready := httptest.NewRecorder()
-	handler.ServeHTTP(unready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	handler.ServeHTTP(unready, localRequest(http.MethodGet, "/readyz", nil))
 	if unready.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unready=%d %s", unready.Code, unready.Body.String())
 	}
 	live := httptest.NewRecorder()
-	handler.ServeHTTP(live, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	handler.ServeHTTP(live, localRequest(http.MethodGet, "/healthz", nil))
 	if live.Code != http.StatusOK {
 		t.Fatalf("live=%d", live.Code)
 	}
@@ -300,7 +352,7 @@ func TestRemotePairingApprovalProtocolAndCollaborationRoutes(t *testing.T) {
 	}
 	handler := HandlerWithRemote(store, manager, identity)
 	call := func(method, path, body, token string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request := localRequest(method, path, strings.NewReader(body))
 		if token != "" {
 			request.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -359,7 +411,7 @@ func TestRemoteRouteErrorsListsAndKillSwitches(t *testing.T) {
 	identity, _ := remote.LoadOrCreateIdentity(filepath.Join(directory, "identity.json"))
 	handler := HandlerWithRemote(store, manager, identity)
 	call := func(method, path, body, token string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request := localRequest(method, path, strings.NewReader(body))
 		if token != "" {
 			request.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -411,7 +463,7 @@ func TestRemoteMCPTransportConformanceAndCollaboration(t *testing.T) {
 	_, token, _ := manager.ApprovePairing(pairing.Code, time.Hour)
 	handler := HandlerWithRemote(store, manager, identity)
 	call := func(method, path, body, bearer, origin, version string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request := localRequest(method, path, strings.NewReader(body))
 		if bearer != "" {
 			request.Header.Set("Authorization", "Bearer "+bearer)
 		}

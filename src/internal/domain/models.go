@@ -1,4 +1,5 @@
 // Package domain defines SessionSift's provider-neutral normalized records.
+// @module DomainModels defines provider-neutral sessions, turns, events, tool calls, findings, and metrics.
 package domain
 
 import (
@@ -6,16 +7,25 @@ import (
 	"time"
 )
 
-const ParserVersion = "codex-jsonl-v11"
+const ParserVersion = "codex-jsonl-v12"
 
-const ChatGPTExportVersion = "chatgpt-export-v2"
+const ChatGPTExportVersion = "chatgpt-export-v3"
+
+// ClaudeCodeParserVersion identifies the Claude Code JSONL adapter; it advances
+// whenever parsing or redaction policy changes so stored rows are rebuilt.
+const ClaudeCodeParserVersion = "claude-code-jsonl-v1"
+
+// ClaudeExportVersion identifies the Claude.ai data-export adapter.
+const ClaudeExportVersion = "claude-export-v1"
 
 // SessionSource identifies the product that produced a normalized session.
 type SessionSource string
 
 const (
-	SourceCodex   SessionSource = "codex"
-	SourceChatGPT SessionSource = "chatgpt"
+	SourceCodex      SessionSource = "codex"
+	SourceChatGPT    SessionSource = "chatgpt"
+	SourceClaudeCode SessionSource = "claude_code"
+	SourceClaude     SessionSource = "claude"
 )
 
 // SessionKind distinguishes developer work, chats, and product-owned supporting agents.

@@ -27,7 +27,7 @@ func TestLocalLibraryPaginationAndStandaloneMetrics(t *testing.T) {
 		status int
 	}{{"?limit=100", 30, 200}, {"?limit=10&cursor=20", 10, 200}, {"?cursor=bad", 0, 400}} {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/sessions"+tc.query, nil))
+		h.ServeHTTP(w, localRequest("GET", "/api/v1/sessions"+tc.query, nil))
 		if w.Code != tc.status {
 			t.Fatalf("%s status=%d", tc.query, w.Code)
 		}
@@ -39,7 +39,7 @@ func TestLocalLibraryPaginationAndStandaloneMetrics(t *testing.T) {
 		}
 	}
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/sessions/s1", nil))
+	h.ServeHTTP(w, localRequest("GET", "/api/v1/sessions/s1", nil))
 	var detail service.SessionSummary
 	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || detail.Metrics.TurnCount != 1 {
 		t.Fatalf("detail lacks independent metrics: %v", err)

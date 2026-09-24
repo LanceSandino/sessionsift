@@ -1,4 +1,5 @@
 // Package cli implements the SessionSift command surface over local services.
+// @module CLI dispatches commands and runs the Local Agent, bridge, importers, and backups.
 package cli
 
 import (
@@ -23,13 +24,16 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/api"
 	"github.com/LanceSandino/sessionsift/src/internal/app"
 	bridgeapp "github.com/LanceSandino/sessionsift/src/internal/bridge"
+	claudediscover "github.com/LanceSandino/sessionsift/src/internal/claude/discover"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/discover"
 	"github.com/LanceSandino/sessionsift/src/internal/codexconfig"
 	"github.com/LanceSandino/sessionsift/src/internal/config"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	"github.com/LanceSandino/sessionsift/src/internal/hooks"
 	"github.com/LanceSandino/sessionsift/src/internal/ingest"
 	mcpserver "github.com/LanceSandino/sessionsift/src/internal/mcp"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
+	"github.com/LanceSandino/sessionsift/src/internal/redact"
 	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 )
@@ -57,6 +61,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return startBridge(ctx, out, errOut)
 	case "agent":
 		return agentCommand(ctx, paths, args[1:], out, errOut)
+	case "support":
+		return supportCommand(ctx, paths, args[1:], out, errOut)
 	case "stop":
 		return stop(paths, out, errOut)
 	case "status":
@@ -71,6 +77,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			return 2
 		}
 		return importChatGPT(ctx, paths, args[1], out, errOut)
+	case "import-claude":
+		if len(args) < 2 {
+			fmt.Fprintln(errOut, "Claude.ai export path required")
+			return 2
+		}
+		return importClaudeExport(ctx, paths, args[1], out, errOut)
 	case "sessions":
 		return list(ctx, paths, out, errOut)
 	case "inspect":
@@ -90,13 +102,20 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	case "doctor":
 		return doctor(ctx, paths, out, errOut)
 	case "hook":
-		return captureHook(paths, in, errOut)
+		provider := "codex"
+		if len(args) > 1 {
+			provider = args[1]
+		}
+		return captureHook(paths, provider, in, errOut)
 	case "setup":
 		if len(args) < 2 {
-			fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, mcp, or undo")
+			fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, claude, mcp, or undo")
 			return 2
 		}
 		if args[1] == "enable" {
+			if len(args) > 2 && args[2] == "claude" {
+				return enableClaudeSetup(out, errOut)
+			}
 			return enableSetup(out, errOut)
 		}
 		return setup(args[1], out, errOut)
@@ -107,13 +126,20 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sessionsift <start|bridge|agent|stop|status|backup|import|import-chatgpt|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
+	fmt.Fprintln(w, "usage: sessionsift <start|bridge|agent|support|stop|status|backup|import|import-chatgpt|import-claude|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
 }
 
+// openStore prepares product state, installs the per-installation path-hash
+// secret before any import runs, and opens the local database.
 func openStore(paths config.Paths) (*storage.Store, error) {
 	if err := paths.Ensure(); err != nil {
 		return nil, err
 	}
+	key, err := config.LoadOrCreateSecret(paths.PathKey)
+	if err != nil {
+		return nil, fmt.Errorf("path hash secret: %w", err)
+	}
+	redact.SetPathKey(key)
 	return storage.Open(paths.Database)
 }
 
@@ -129,7 +155,9 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		fmt.Fprintf(out, "Replayed %d spooled hook events.\n", replayed)
 	}
 	codexHome, _ := discover.Home()
+	claudeHome, _ := claudediscover.Home()
 	chatGPTExport := chatGPTExportPath(paths)
+	claudeExport := rememberedPath(paths.ClaudeExport, "SESSIONSIFT_CLAUDE_EXPORT")
 	if err := os.WriteFile(paths.PID, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		return fail(errOut, err)
 	}
@@ -147,34 +175,35 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	if remoteErr != nil {
 		return fail(errOut, remoteErr)
 	}
-	var hostedConfig *remote.HostedConfig
-	var hostedInviter *remote.HostedInviter
-	if hosted, hostedErr := remote.LoadHostedConfig(paths.HostedBridge); hostedErr == nil {
-		hostedConfig = &hosted
-		hostedInviter = remote.NewHostedInviter(nil, hosted, identity, remoteManager)
-	} else if !errors.Is(hostedErr, os.ErrNotExist) {
+	stopCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	hosted, hostedErr := remote.NewHostedRuntime(stopCtx, paths.HostedBridge, identity, remoteManager, store, hostedHTTPClient, func(loopErr error) {
+		fmt.Fprintf(errOut, "hosted bridge warning: %v\n", loopErr)
+	})
+	if hostedErr != nil {
 		fmt.Fprintf(errOut, "hosted bridge configuration warning: %v\n", hostedErr)
 	}
-	handler := api.HandlerWithHostedInvites(store, remoteManager, identity, hostedInviter)
+	defer hosted.Stop()
+	handler := api.HandlerWithHostedRuntime(store, remoteManager, identity, hosted)
 	if !loopbackListener(address) {
 		handler = localProxyOnly(handler)
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
-	stopCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if codexHome != "" {
 		go importAndWatchCodex(stopCtx, store, codexHome, out, errOut)
 	}
 	if chatGPTExport != "" {
 		go importAndWatchChatGPT(stopCtx, store, chatGPTExport, out, errOut)
 	}
+	if claudeHome != "" {
+		go importAndWatchClaude(stopCtx, store, claudeHome, out, errOut)
+	}
+	if claudeExport != "" {
+		go importAndWatchExport(stopCtx, store, claudeExport, "Claude", ingest.ImportClaudeExport, out, errOut)
+	}
 	go runBackups(stopCtx, store, paths.Backups, errOut)
-	if hostedConfig != nil {
-		agent := remote.NewAgent(identity, remoteManager, store)
-		go remote.RunHostedLoop(stopCtx, agent, nil, *hostedConfig, func(loopErr error) {
-			fmt.Fprintf(errOut, "hosted bridge warning: %v\n", loopErr)
-		})
-		fmt.Fprintf(out, "Outbound bridge connected to %s\n", hostedConfig.URL)
+	if status := hosted.Status(); status.Connected {
+		fmt.Fprintf(out, "Outbound bridge connected to %s\n", status.URL)
 	}
 	go func() {
 		<-stopCtx.Done()
@@ -247,113 +276,6 @@ func bridgeAddress() string {
 		return "127.0.0.1:7780"
 	}
 	return value
-}
-
-func agentCommand(ctx context.Context, paths config.Paths, args []string, out, errOut io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: sessionsift agent <enroll|share|revoke|status>")
-		return 2
-	}
-	if err := paths.Ensure(); err != nil {
-		return fail(errOut, err)
-	}
-	identity, err := remote.LoadOrCreateIdentity(paths.DeviceIdentity)
-	if err != nil {
-		return fail(errOut, err)
-	}
-	manager, err := remote.OpenManager(paths.RemoteState)
-	if err != nil {
-		return fail(errOut, err)
-	}
-	switch args[0] {
-	case "enroll":
-		if len(args) < 3 {
-			fmt.Fprintln(errOut, "usage: sessionsift agent enroll <bridge-url> <code> [device-name]")
-			return 2
-		}
-		name := "SessionSift device"
-		if hostname, hostErr := os.Hostname(); hostErr == nil && hostname != "" {
-			name = hostname
-		}
-		if len(args) > 3 && strings.TrimSpace(args[3]) != "" {
-			name = strings.TrimSpace(args[3])
-		}
-		config, enrollErr := remote.EnrollHosted(ctx, hostedHTTPClient, args[1], args[2], name, identity)
-		if enrollErr != nil {
-			return fail(errOut, enrollErr)
-		}
-		grant, grantErr := manager.ApproveOAuthPrincipal(config.Owner, protocol.ReadOperations(), 30*24*time.Hour)
-		if grantErr != nil {
-			return fail(errOut, grantErr)
-		}
-		if grantErr = remote.RegisterHostedGrant(ctx, hostedHTTPClient, config, identity, config.Owner, grant.Operations, grant.ExpiresAt); grantErr != nil {
-			_ = manager.Revoke(grant.ID)
-			return fail(errOut, grantErr)
-		}
-		if saveErr := remote.SaveHostedConfig(paths.HostedBridge, config); saveErr != nil {
-			_ = remote.RevokeHostedGrant(ctx, hostedHTTPClient, config, identity, config.Owner)
-			_ = manager.Revoke(grant.ID)
-			return fail(errOut, saveErr)
-		}
-		fmt.Fprintf(out, "Connected %s to %s for %s. Restart SessionSift to begin outbound polling.\n", config.DeviceID, config.URL, config.Owner)
-		return 0
-	case "share":
-		if len(args) < 2 {
-			fmt.Fprintln(errOut, "usage: sessionsift agent share <email> [days]")
-			return 2
-		}
-		duration := 30 * 24 * time.Hour
-		if len(args) > 2 {
-			days, parseErr := strconv.Atoi(args[2])
-			if parseErr != nil || days < 1 || days > 30 {
-				fmt.Fprintln(errOut, "days must be between 1 and 30")
-				return 2
-			}
-			duration = time.Duration(days) * 24 * time.Hour
-		}
-		config, loadErr := remote.LoadHostedConfig(paths.HostedBridge)
-		if loadErr != nil {
-			return fail(errOut, errors.New("this device is not enrolled; run sessionsift agent enroll first"))
-		}
-		grant, grantErr := manager.ApproveOAuthPrincipal(args[1], protocol.ReadOperations(), duration)
-		if grantErr != nil {
-			return fail(errOut, grantErr)
-		}
-		if grantErr = remote.RegisterHostedGrant(ctx, hostedHTTPClient, config, identity, grant.Principal, grant.Operations, grant.ExpiresAt); grantErr != nil {
-			_ = manager.Revoke(grant.ID)
-			return fail(errOut, grantErr)
-		}
-		fmt.Fprintf(out, "Shared read-only session access with %s until %s.\n", grant.Principal, grant.ExpiresAt.Format(time.RFC3339))
-		return 0
-	case "revoke":
-		if len(args) < 2 {
-			fmt.Fprintln(errOut, "usage: sessionsift agent revoke <email>")
-			return 2
-		}
-		config, loadErr := remote.LoadHostedConfig(paths.HostedBridge)
-		if loadErr != nil {
-			return fail(errOut, loadErr)
-		}
-		if revokeErr := remote.RevokeHostedGrant(ctx, hostedHTTPClient, config, identity, args[1]); revokeErr != nil {
-			return fail(errOut, revokeErr)
-		}
-		if revokeErr := manager.RevokePrincipal(args[1]); revokeErr != nil {
-			return fail(errOut, revokeErr)
-		}
-		fmt.Fprintf(out, "Revoked hosted and local access for %s.\n", strings.ToLower(strings.TrimSpace(args[1])))
-		return 0
-	case "status":
-		config, loadErr := remote.LoadHostedConfig(paths.HostedBridge)
-		if loadErr != nil {
-			fmt.Fprintln(out, "Hosted bridge: not enrolled")
-			return 0
-		}
-		fmt.Fprintf(out, "Hosted bridge: %s\nDevice: %s\nOwner: %s\nLocal OAuth grants: %d\n", config.URL, config.DeviceID, config.Owner, len(manager.OAuthGrants()))
-		return 0
-	default:
-		fmt.Fprintln(errOut, "usage: sessionsift agent <enroll|share|revoke|status>")
-		return 2
-	}
 }
 
 func importAndWatchCodex(ctx context.Context, store *storage.Store, home string, out, errOut io.Writer) {
@@ -614,7 +536,13 @@ func importSessions(ctx context.Context, paths config.Paths, out, errOut io.Writ
 	if err != nil {
 		return fail(errOut, err)
 	}
-	return write(out, errOut, result)
+	claude := ingest.Result{}
+	if claudeHome, homeErr := claudediscover.Home(); homeErr == nil {
+		if claude, err = ingest.ImportClaude(ctx, store, claudeHome); err != nil {
+			return fail(errOut, err)
+		}
+	}
+	return write(out, errOut, map[string]ingest.Result{"codex": result, "claude_code": claude})
 }
 
 func importChatGPT(ctx context.Context, paths config.Paths, path string, out, errOut io.Writer) int {
@@ -774,13 +702,19 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 	database := "not initialized\t!"
 	warnings := 0
 	chatCount := 0
+	claudeCodeCount, claudeCount := 0, 0
 	if store, openErr := openStore(paths); openErr == nil {
 		database = paths.Database + "\t✓"
 		if sessions, listErr := store.ListSessions(ctx); listErr == nil {
 			for _, session := range sessions {
 				warnings += len(session.Warnings)
-				if session.Source == domain.SourceChatGPT {
+				switch session.Source {
+				case domain.SourceChatGPT:
 					chatCount++
+				case domain.SourceClaudeCode:
+					claudeCodeCount++
+				case domain.SourceClaude:
+					claudeCount++
 				}
 			}
 		}
@@ -804,16 +738,24 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 		}
 	}
 	fmt.Fprintf(out, "Codex home       %s\t✓\nSessions         %d found\t✓\nArchived         %d found\t✓\nChatGPT source   %s\nChatGPT chats    %d imported\nHistory          %s\nHook capture     %s\nOTel logs       %s\nOTel metrics    %s\nCollector        %s\nDatabase         %s\nLatest backup    %s\nParser warnings  %d\n", home, current, archived, chatSource, chatCount, history, hooks, otelLogs, otelMetrics, collector, database, backupState, warnings)
+	fmt.Fprint(out, claudeDoctor(paths, claudeCodeCount, claudeCount))
 	return 0
 }
 
-func captureHook(paths config.Paths, in io.Reader, errOut io.Writer) int {
+// captureHook forwards one lifecycle-hook payload from Codex or Claude Code.
+// It never blocks the agent: on any delivery failure the payload is spooled
+// under a provider-tagged name and replayed on the next start.
+func captureHook(paths config.Paths, provider string, in io.Reader, errOut io.Writer) int {
 	body, err := io.ReadAll(io.LimitReader(in, 1<<20))
 	if err != nil {
 		return 0
 	}
+	route, prefix := "codex", ""
+	if parsed, ok := hooks.ParseProvider(provider); ok && parsed == hooks.ClaudeCode {
+		route, prefix = "claude", "claude-"
+	}
 	client := http.Client{Timeout: 40 * time.Millisecond}
-	response, postErr := client.Post("http://"+localAddress(listenAddress())+"/internal/hooks/codex", "application/json", bytes.NewReader(body))
+	response, postErr := client.Post("http://"+localAddress(listenAddress())+"/internal/hooks/"+route, "application/json", bytes.NewReader(body))
 	if postErr == nil {
 		response.Body.Close()
 		if response.StatusCode < 300 {
@@ -823,7 +765,7 @@ func captureHook(paths config.Paths, in io.Reader, errOut io.Writer) int {
 	if err := paths.Ensure(); err != nil {
 		return 0
 	}
-	name := fmt.Sprintf("%d-%d.json", time.Now().UnixNano(), os.Getpid())
+	name := fmt.Sprintf("%s%d-%d.json", prefix, time.Now().UnixNano(), os.Getpid())
 	if err := os.WriteFile(filepath.Join(paths.RawEvents, name), body, 0o600); err != nil {
 		fmt.Fprintln(errOut, "hook spool warning:", err)
 	}
@@ -838,12 +780,14 @@ func setup(kind string, out, errOut io.Writer) int {
 		fmt.Fprintln(out, otelSnippet)
 	case "chatgpt":
 		fmt.Fprintln(out, chatGPTSnippet)
+	case "claude":
+		fmt.Fprintln(out, claudeSnippet)
 	case "mcp":
 		fmt.Fprintln(out, mcpSnippet)
 	case "undo":
-		fmt.Fprintln(out, "Remove only the SessionSift entries you added from ~/.codex/hooks.json and ~/.codex/config.toml. Delete ~/.sessionsift/chatgpt-export.path to stop watching a remembered ChatGPT export. SessionSift does not edit Codex configuration automatically.")
+		fmt.Fprintln(out, "Remove only the SessionSift entries you added from ~/.codex/hooks.json, ~/.codex/config.toml, and the \"hooks\" object of ~/.claude/settings.json (entries running \"sessionsift hook claude\"). Delete ~/.sessionsift/chatgpt-export.path or ~/.sessionsift/claude-export.path to stop watching a remembered export. SessionSift edits agent configuration only when you run setup enable.")
 	default:
-		fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, mcp, or undo")
+		fmt.Fprintln(errOut, "setup requires enable, hooks, otel, chatgpt, claude, mcp, or undo")
 		return 2
 	}
 	return 0
@@ -900,10 +844,16 @@ const chatGPTSnippet = `Export ChatGPT data from Settings > Data Controls, then 
 SessionSift remembers that private local path and checks it for replacements while running.
 You can also set SESSIONSIFT_CHATGPT_EXPORT to override the remembered path.`
 
-const mcpSnippet = `Add SessionSift's read-only local MCP server to ~/.codex/config.toml:
+const mcpSnippet = `Codex: add SessionSift's read-only local MCP server to ~/.codex/config.toml:
 [mcp_servers.sessionsift]
 command = "sessionsift"
 args = ["mcp"]
+
+Claude Code:
+  claude mcp add --scope user sessionsift -- sessionsift mcp
+
+Claude Desktop: add to claude_desktop_config.json under "mcpServers":
+  "sessionsift": {"command": "sessionsift", "args": ["mcp"]}
 
 The stdio process exposes ten bounded, redacted tools and no shell, process, filesystem, or SQL primitive.`
 

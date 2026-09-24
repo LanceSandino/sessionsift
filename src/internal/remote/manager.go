@@ -7,12 +7,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/mail"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -84,13 +81,13 @@ type Review struct {
 }
 
 type managerState struct {
-	Pairings    []Pairing     `json:"pairings"`
-	Grants      []Grant       `json:"grants"`
-	Connections []Connection  `json:"connections"`
-	Audit       []AuditRecord `json:"audit"`
-	Annotations []Annotation  `json:"annotations"`
-	Reviews     []Review      `json:"reviews"`
-	BadAttempts int           `json:"bad_attempts"`
+	Pairings    []Pairing
+	Grants      []Grant
+	Connections []Connection
+	Annotations []Annotation
+	Reviews     []Review
+	Support     []SupportSession
+	BadAttempts int
 }
 
 type storedGrant struct {
@@ -109,22 +106,30 @@ type storedGrant struct {
 }
 
 type storedManagerState struct {
-	Pairings    []Pairing     `json:"pairings"`
-	Grants      []storedGrant `json:"grants"`
-	Connections []Connection  `json:"connections"`
-	Audit       []AuditRecord `json:"audit"`
-	Annotations []Annotation  `json:"annotations"`
-	Reviews     []Review      `json:"reviews"`
-	BadAttempts int           `json:"bad_attempts"`
+	Pairings    []Pairing       `json:"pairings"`
+	Grants      []storedGrant   `json:"grants"`
+	Connections []Connection    `json:"connections"`
+	Audit       []AuditRecord   `json:"audit,omitempty"`
+	Annotations []Annotation    `json:"annotations"`
+	Reviews     []Review        `json:"reviews"`
+	Support     []storedSupport `json:"support_sessions,omitempty"`
+	BadAttempts int             `json:"bad_attempts"`
 }
+
+// Manager is the Local Agent authority for remote access. remote-state.json is
+// shared by the running agent and CLI commands, so every operation first
+// reloads the file when another process changed it (see state.go).
 type Manager struct {
 	mu           sync.Mutex
 	path         string
 	state        managerState
+	stamp        fileStamp
 	now          func() time.Time
 	claimBuckets map[string]rateBucket
 	grantBuckets map[string]rateBucket
 	auditErr     error
+	auditLines   int
+	stateErr     error
 }
 
 type rateBucket struct {
@@ -134,25 +139,17 @@ type rateBucket struct {
 
 func OpenManager(path string) (*Manager, error) {
 	m := &Manager{path: path, now: func() time.Time { return time.Now().UTC() }, claimBuckets: map[string]rateBucket{}, grantBuckets: map[string]rateBucket{}}
-	body, err := os.ReadFile(path)
-	if err == nil && len(body) > 0 {
-		var stored storedManagerState
-		if json.Unmarshal(body, &stored) != nil {
-			return nil, errors.New("invalid remote state")
-		}
-		m.state = managerState{Pairings: stored.Pairings, Connections: stored.Connections, Audit: stored.Audit, Annotations: stored.Annotations, Reviews: stored.Reviews, BadAttempts: stored.BadAttempts}
-		for _, grant := range stored.Grants {
-			m.state.Grants = append(m.state.Grants, Grant(grant))
-		}
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := m.load(); err != nil {
 		return nil, err
 	}
+	m.auditLines = m.countAuditLines()
 	return m, nil
 }
 
 func (m *Manager) CreatePairing(deviceID string) (Pairing, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	if deviceID == "" {
 		return Pairing{}, errors.New("device id required")
 	}
@@ -172,6 +169,7 @@ func (m *Manager) ClaimPairing(code, reviewer string, requested []protocol.Opera
 func (m *Manager) ClaimPairingFrom(code, reviewer string, requested []protocol.Operation, source string) (Pairing, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	if !m.allow(m.claimBuckets, source, 5, 10*time.Minute) {
 		return Pairing{}, errors.New("pairing attempts temporarily locked")
 	}
@@ -192,7 +190,7 @@ func (m *Manager) ClaimPairingFrom(code, reviewer string, requested []protocol.O
 		return Pairing{}, errors.New("reviewer and capabilities required")
 	}
 	for _, operation := range requested {
-		if _, ok := protocol.DefinitionFor(operation); !ok {
+		if !protocol.Grantable(operation) {
 			return Pairing{}, errors.New("capability is not allowlisted")
 		}
 	}
@@ -206,6 +204,7 @@ func (m *Manager) ClaimPairingFrom(code, reviewer string, requested []protocol.O
 func (m *Manager) DenyPairing(code string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	index := m.pairingIndex(code)
 	if index < 0 {
 		return errors.New("pairing not found")
@@ -221,6 +220,7 @@ func (m *Manager) DenyPairing(code string) error {
 func (m *Manager) ApprovePairing(code string, duration time.Duration) (Grant, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	index := m.pairingIndex(code)
 	if index < 0 {
 		return Grant{}, "", errors.New("pairing not found")
@@ -250,6 +250,7 @@ func (m *Manager) ApprovePairing(code string, duration time.Duration) (Grant, st
 func (m *Manager) ApproveOAuthPrincipal(principal string, operations []protocol.Operation, duration time.Duration) (Grant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	principal, err := normalizePrincipal(principal)
 	if err != nil {
 		return Grant{}, err
@@ -261,7 +262,7 @@ func (m *Manager) ApproveOAuthPrincipal(principal string, operations []protocol.
 		return Grant{}, errors.New("at least one capability is required")
 	}
 	for _, operation := range operations {
-		if _, ok := protocol.DefinitionFor(operation); !ok {
+		if !protocol.Grantable(operation) {
 			return Grant{}, errors.New("capability is not allowlisted")
 		}
 	}
@@ -282,6 +283,7 @@ func (m *Manager) ApproveOAuthPrincipal(principal string, operations []protocol.
 func (m *Manager) ApproveInvitePrincipal(inviteID, principal, sessionID, role string, expiresAt time.Time) (Grant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	principal, err := normalizePrincipal(principal)
 	if err != nil {
 		return Grant{}, err
@@ -315,6 +317,7 @@ func (m *Manager) ApproveInvitePrincipal(inviteID, principal, sessionID, role st
 func (m *Manager) Authorize(_ context.Context, token string, operation protocol.Operation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	grant, err := m.authenticateLocked(token)
 	if err != nil {
 		return err
@@ -340,6 +343,7 @@ func (m *Manager) Authorize(_ context.Context, token string, operation protocol.
 func (m *Manager) AuthorizePrincipal(_ context.Context, principal string, operation protocol.Operation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	grant, err := m.principalGrantLocked(principal)
 	if err != nil {
 		return err
@@ -359,6 +363,13 @@ func (m *Manager) AuthorizePrincipal(_ context.Context, principal string, operat
 func (m *Manager) AuthorizePrincipalRequest(_ context.Context, principal string, request protocol.Request) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
+	if m.stateErr != nil {
+		return errors.New("remote state is unavailable")
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
 	principal, err := normalizePrincipal(principal)
 	if err != nil {
 		return err
@@ -367,14 +378,14 @@ func (m *Manager) AuthorizePrincipalRequest(_ context.Context, principal string,
 	foundPrincipal := false
 	for index := len(m.state.Grants) - 1; index >= 0; index-- {
 		grant := &m.state.Grants[index]
-		if grant.Principal != principal || (grant.AuthMethod != "oauth" && grant.AuthMethod != "invite") {
+		if grant.Principal != principal || (grant.AuthMethod != "oauth" && grant.AuthMethod != "invite" && grant.AuthMethod != "support") {
 			continue
 		}
 		foundPrincipal = true
 		if grant.Revoked || now.After(grant.ExpiresAt) || !operationAllowed(grant.Operations, request.Operation) {
 			continue
 		}
-		if grant.AuthMethod == "invite" && !requestTargetsOnly(request, grant.SessionIDs) {
+		if (grant.AuthMethod == "invite" || grant.AuthMethod == "support") && !requestTargetsOnly(request, grant.SessionIDs) {
 			continue
 		}
 		m.touchConnection(grant.ID)
@@ -390,12 +401,14 @@ func (m *Manager) AuthorizePrincipalRequest(_ context.Context, principal string,
 func (m *Manager) Authenticate(token string) (Grant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	return m.authenticateLocked(token)
 }
 
 func (m *Manager) AllowRequest(token string) (Grant, time.Duration, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	grant, err := m.authenticateLocked(token)
 	if err != nil {
 		return Grant{}, 0, err
@@ -411,6 +424,7 @@ func (m *Manager) AllowRequest(token string) (Grant, time.Duration, error) {
 func (m *Manager) AllowPrincipalRequest(principal string) (Grant, time.Duration, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	grant, err := m.principalGrantLocked(principal)
 	if err != nil {
 		return Grant{}, 0, err
@@ -424,6 +438,7 @@ func (m *Manager) AllowPrincipalRequest(principal string) (Grant, time.Duration,
 func (m *Manager) GrantForToken(token string) (Grant, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	for _, grant := range m.state.Grants {
 		if constantHashEqual(grant.TokenHash, hash(token)) {
 			return grant, true
@@ -436,6 +451,7 @@ func (m *Manager) GrantForToken(token string) (Grant, bool) {
 func (m *Manager) OAuthGrants() []Grant {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	values := make([]Grant, 0)
 	for _, grant := range m.state.Grants {
 		if grant.AuthMethod == "oauth" {
@@ -449,6 +465,7 @@ func (m *Manager) OAuthGrants() []Grant {
 func (m *Manager) InviteGrants() []Grant {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	values := make([]Grant, 0)
 	for _, grant := range m.state.Grants {
 		if grant.AuthMethod == "invite" {
@@ -462,6 +479,7 @@ func (m *Manager) InviteGrants() []Grant {
 func (m *Manager) GrantForPrincipal(principal string) (Grant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	return m.principalGrantLocked(principal)
 }
 
@@ -469,6 +487,7 @@ func (m *Manager) GrantForPrincipal(principal string) (Grant, error) {
 func (m *Manager) RevokePrincipal(principal string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	principal, err := normalizePrincipal(principal)
 	if err != nil {
 		return err
@@ -496,6 +515,7 @@ func (m *Manager) RevokePrincipal(principal string) error {
 func (m *Manager) RevokeInvitation(inviteID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	for index := range m.state.Grants {
 		grant := &m.state.Grants[index]
 		if grant.AuthMethod != "invite" || grant.InviteID != inviteID || grant.Revoked {
@@ -514,6 +534,7 @@ func (m *Manager) RevokeInvitation(inviteID string) error {
 func (m *Manager) Revoke(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	for index := range m.state.Grants {
 		if m.state.Grants[index].ID == id {
 			m.state.Grants[index].Revoked = true
@@ -530,6 +551,7 @@ func (m *Manager) Revoke(id string) error {
 func (m *Manager) Disconnect(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	for index := range m.state.Connections {
 		if m.state.Connections[index].ID == id {
 			m.state.Connections[index].Active = false
@@ -546,11 +568,13 @@ func (m *Manager) Disconnect(id string) error {
 func (m *Manager) Connections() []Connection {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	return append([]Connection{}, m.state.Connections...)
 }
 func (m *Manager) PendingPairings() []Pairing {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	values := make([]Pairing, 0)
 	for _, pairing := range m.state.Pairings {
 		if pairing.Claimed && !pairing.Approved && !pairing.Used && !pairing.Denied && !m.now().After(pairing.ExpiresAt) {
@@ -561,6 +585,9 @@ func (m *Manager) PendingPairings() []Pairing {
 }
 
 func (m *Manager) authenticateLocked(token string) (Grant, error) {
+	if m.stateErr != nil {
+		return Grant{}, errors.New("remote state is unavailable")
+	}
 	tokenHash := hash(token)
 	for _, grant := range m.state.Grants {
 		if !constantHashEqual(grant.TokenHash, tokenHash) {
@@ -575,6 +602,9 @@ func (m *Manager) authenticateLocked(token string) (Grant, error) {
 }
 
 func (m *Manager) principalGrantLocked(principal string) (Grant, error) {
+	if m.stateErr != nil {
+		return Grant{}, errors.New("remote state is unavailable")
+	}
 	principal, err := normalizePrincipal(principal)
 	if err != nil {
 		return Grant{}, err
@@ -601,25 +631,10 @@ func operationAllowed(operations []protocol.Operation, operation protocol.Operat
 	return false
 }
 
+// requestTargetsOnly accepts only unambiguous arguments naming the one
+// session a scoped grant covers (see protocol.SessionScoped).
 func requestTargetsOnly(request protocol.Request, sessionIDs []string) bool {
-	if len(sessionIDs) != 1 {
-		return false
-	}
-	var arguments map[string]any
-	if len(request.Arguments) == 0 || json.Unmarshal(request.Arguments, &arguments) != nil {
-		return false
-	}
-	target, ok := arguments["session_id"].(string)
-	if !ok || target == "" || target != sessionIDs[0] {
-		return false
-	}
-	if comparison, exists := arguments["a"]; exists && comparison != target {
-		return false
-	}
-	if comparison, exists := arguments["b"]; exists && comparison != target {
-		return false
-	}
-	return true
+	return len(sessionIDs) == 1 && protocol.SessionScoped(request.Arguments, sessionIDs[0])
 }
 
 func (m *Manager) allow(buckets map[string]rateBucket, key string, maximum int, window time.Duration) bool {
@@ -639,30 +654,10 @@ func (m *Manager) allow(buckets map[string]rateBucket, key string, maximum int, 
 	buckets[key] = bucket
 	return true
 }
-func (m *Manager) RecordAudit(record AuditRecord) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if record.Timestamp.IsZero() {
-		record.Timestamp = m.now()
-	}
-	m.state.Audit = append(m.state.Audit, record)
-	m.auditErr = m.persist()
-}
-func (m *Manager) Audit() []AuditRecord {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]AuditRecord{}, m.state.Audit...)
-}
-
-// AuditHealthy reports persistence failure without leaking paths or record data.
-func (m *Manager) AuditHealthy() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.auditErr == nil
-}
 func (m *Manager) AddAnnotation(sessionID, turnID, author, body string) (Annotation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	if sessionID == "" || author == "" || body == "" {
 		return Annotation{}, errors.New("session, author, and body required")
 	}
@@ -674,6 +669,7 @@ func (m *Manager) AddAnnotation(sessionID, turnID, author, body string) (Annotat
 func (m *Manager) Annotations(sessionID string) []Annotation {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	values := make([]Annotation, 0)
 	for _, value := range m.state.Annotations {
 		if value.SessionID == sessionID {
@@ -685,6 +681,7 @@ func (m *Manager) Annotations(sessionID string) []Annotation {
 func (m *Manager) AddReview(sessionID, reviewer, status, summary string) (Review, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	if sessionID == "" || reviewer == "" || summary == "" {
 		return Review{}, errors.New("session, reviewer, and summary required")
 	}
@@ -696,6 +693,7 @@ func (m *Manager) AddReview(sessionID, reviewer, status, summary string) (Review
 func (m *Manager) Reviews(sessionID string) []Review {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncLocked()
 	values := make([]Review, 0)
 	for _, value := range m.state.Reviews {
 		if value.SessionID == sessionID {
@@ -719,25 +717,6 @@ func (m *Manager) touchConnection(grantID string) {
 		}
 	}
 }
-func (m *Manager) persist() error {
-	stored := storedManagerState{Pairings: m.state.Pairings, Connections: m.state.Connections, Audit: m.state.Audit, Annotations: m.state.Annotations, Reviews: m.state.Reviews, BadAttempts: m.state.BadAttempts}
-	for _, grant := range m.state.Grants {
-		stored.Grants = append(stored.Grants, storedGrant(grant))
-	}
-	body, err := json.MarshalIndent(stored, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err = os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
-		return err
-	}
-	temporary := m.path + ".tmp"
-	if err = os.WriteFile(temporary, append(body, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, m.path)
-}
-
 func normalizePrincipal(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	address, err := mail.ParseAddress(value)

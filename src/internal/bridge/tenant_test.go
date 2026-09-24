@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,20 +17,13 @@ import (
 
 func enrollTenantDevice(t *testing.T, store *Store, owner, name string) Device {
 	t.Helper()
-	enrollment, err := store.CreateEnrollment(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	device, err := store.Enroll(enrollment.Code, name, public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if device.WorkspaceID == "" || enrollment.WorkspaceID != device.WorkspaceID {
-		t.Fatalf("missing workspace scope: enrollment=%+v device=%+v", enrollment, device)
+	device := testOwnedDevice(t, store, owner, name, public)
+	if device.WorkspaceID != workspaceIDFor(owner) {
+		t.Fatalf("missing personal workspace scope: device=%+v", device)
 	}
 	return device
 }
@@ -124,12 +118,17 @@ func TestWorkspaceOwnerControlsMembershipAndScopedEnrollment(t *testing.T) {
 	if _, err = store.AddMembership("member@example.com", workspace.ID, "intruder@example.com", "member"); err == nil {
 		t.Fatal("non-owner changed workspace membership")
 	}
-	enrollment, err := store.CreateEnrollmentForWorkspace("owner@example.com", workspace.ID)
-	if err != nil || enrollment.WorkspaceID != workspace.ID {
-		t.Fatalf("enrollment=%+v err=%v", enrollment, err)
+	public, _, _ := ed25519.GenerateKey(rand.Reader)
+	registered, err := store.RegisterDevice("Team laptop", public)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err = store.CreateEnrollmentForWorkspace("member@example.com", workspace.ID); err == nil {
-		t.Fatal("ordinary member created workspace enrollment")
+	if _, err = store.ClaimDeviceLink("member@example.com", testLinkCode(t, store, registered.ID), workspace.ID); err == nil {
+		t.Fatal("ordinary member linked a device into the workspace")
+	}
+	linked, err := store.ClaimDeviceLink("owner@example.com", testLinkCode(t, store, registered.ID), workspace.ID)
+	if err != nil || linked.WorkspaceID != workspace.ID || linked.Owner != "owner@example.com" {
+		t.Fatalf("linked=%+v err=%v", linked, err)
 	}
 	members, err := store.MembersFor("owner@example.com", workspace.ID)
 	if err != nil || len(members) != 2 {
@@ -243,8 +242,8 @@ func TestWorkspaceValidationFailsClosedAndDiscoveryIsStable(t *testing.T) {
 	if err = store.RemoveMembership(workspace.Owner, workspace.ID, "missing@example.com"); err == nil {
 		t.Fatal("missing membership removal succeeded")
 	}
-	if _, err = store.CreateEnrollmentForWorkspace("outsider@example.com", workspace.ID); err == nil {
-		t.Fatal("outsider created a workspace enrollment")
+	if _, err = store.ClaimDeviceLink("outsider@example.com", "0000-0000-0000", workspace.ID); err == nil {
+		t.Fatal("outsider linked a device into the workspace")
 	}
 	if _, err = store.ResolveMCPTarget(workspace.Owner); err == nil {
 		t.Fatal("identity without a grant resolved an MCP target")
@@ -278,15 +277,23 @@ func TestStoreFailsClosedWhenBridgeDatabaseIsUnavailable(t *testing.T) {
 		}},
 		{"list members", func() error { _, value := store.MembersFor("owner@example.com", "workspace"); return value }},
 		{"remove member", func() error { return store.RemoveMembership("owner@example.com", "workspace", "member@example.com") }},
-		{"create enrollment", func() error { _, value := store.CreateEnrollment("owner@example.com"); return value }},
-		{"scoped enrollment", func() error {
-			_, value := store.CreateEnrollmentForWorkspace("owner@example.com", "workspace")
+		{"register device", func() error {
+			_, value := store.RegisterDevice("Laptop", make(ed25519.PublicKey, ed25519.PublicKeySize))
 			return value
 		}},
-		{"enroll", func() error {
-			_, value := store.Enroll("code", "Laptop", make(ed25519.PublicKey, ed25519.PublicKeySize))
+		{"create link", func() error {
+			return store.CreateDeviceLink("device", strings.Repeat("a", 64), time.Now().Add(time.Minute))
+		}},
+		{"claim link", func() error {
+			_, value := store.ClaimDeviceLink("owner@example.com", "0000-0000-0000", "")
 			return value
 		}},
+		{"register support", func() error {
+			_, value := store.RegisterSupport("device", "support_0123456789abcdef", strings.Repeat("a", 64), "session", "view", time.Now().Add(time.Minute), 30)
+			return value
+		}},
+		{"find support", func() error { _, value := store.FindWaitingSupport("0000-0000-0000"); return value }},
+		{"list support", func() error { _, value := store.SupportForDevice("device"); return value }},
 		{"create invitation", func() error {
 			_, _, value := store.CreateInvitation("device", "owner@example.com", "reviewer@example.com", "session", "view", time.Now().Add(time.Hour))
 			return value

@@ -13,9 +13,10 @@ hostname.
 | Route | Purpose | Access behavior |
 | --- | --- | --- |
 | `/` and application routes | Human UI and JSON API | Existing Google Access login |
-| `/mcp` | Current Streamable HTTP MCP for ChatGPT | Cloudflare Managed OAuth plus a local identity grant |
-| `/agent/*` | Signed outbound Local Agent relay | Access Bypass; origin verifies enrollment code or Ed25519 signature |
+| `/mcp` | Current Streamable HTTP MCP for ChatGPT and Claude | Cloudflare Managed OAuth plus a local identity grant |
+| `/agent/*` | Signed outbound Local Agent relay | Access Bypass; origin verifies key-possession proof (registration) or a body-bound Ed25519 signature |
 | `/invite/*` | Email-bound, single-session reviewer portal | Separate Google Access application; origin rechecks the exact invited email and invite session |
+| `/support` and `/support/*` | Support-code entry and the one-session supporter view | Google Access application (the invitation application or its own); origin requires a device-verified code, then an identity-bound cookie |
 | `/.well-known/oauth-protected-resource` | RFC 9728 resource discovery | Publicly discoverable/Managed OAuth |
 | `/healthz` | Process liveness | Private or service-token policy |
 | `/readyz` | SQLite integrity/readiness | Private or service-token policy |
@@ -45,6 +46,41 @@ The existing deployment already has Managed OAuth enabled; do not recreate its
 clients or rotate credentials as part of routine upgrades. Google remains the
 upstream login. The main app remains email-allowlisted for the private beta.
 
+## Code-based support connections
+
+The source machine generates every code. `sessionsift agent connect <bridge>`
+(or **Remote access → Connect this device**) registers the device's Ed25519 key
+with a possession proof; no account or console code is needed, and an unlinked
+device can do nothing except serve support codes it issues itself. Registration is
+rate-limited per client IP.
+
+To share one conversation, the source owner chooses **Generate support code** (or
+`sessionsift support start <session-id>`). The device creates a 12-character
+Crockford code (60 bits), keeps only its domain-separated hash, and publishes that
+hash with the session ID, role, a ten-minute code expiry and an access length of
+5 minutes to 8 hours. The supporter signs in at `/support` and enters the code.
+The bridge finds the device by hash, relays the typed code to the device, and the
+**device itself** verifies it, binds the supporter's Access-verified email, and
+creates a local single-session grant. Only then does the bridge set a hashed,
+identity-bound `__Host-` cookie. A compromised bridge therefore cannot redeem a
+code it has never seen. Codes are single-use; wrong codes are rate-limited per
+identity and per IP, and the device ends a code after five failed verifications.
+The source owner sees the connected supporter live and can end access; the
+supporter can disconnect; either end revokes the local grant.
+
+To use MCP, invitations and the hosted session list for your own device, link
+it to your account: `sessionsift agent link` (or **Link to account**) shows a
+code, and you enter it under **Add a device** in `/`. A device already linked to
+another owner can never be re-linked. The console no longer issues enrollment
+codes.
+
+Add `/support` and `/support/*` to the path-scoped Google Access application you
+use for `/invite/*` (or give it its own application and append its audience to
+`SESSIONSIFT_ACCESS_AUD`). The main application's audience must stay first.
+`/support/assets/*` contains only compiled static UI assets.
+
+## Email invitations
+
 An owner creates an invitation for one session, one normalized email, one role,
 and an expiry of at most 30 days. The acceptance code is single-use and stored
 only as a hash. Successful acceptance replaces it with a random per-invitation
@@ -58,13 +94,13 @@ route passes through one fail-closed origin gate before any private lookup. The
 gate requires a non-empty Access assertion and validates its signature, exact
 issuer, application audience, expiry, subject, and normalized email. Missing,
 forged, expired, or incomplete assertions receive `401` and cannot enqueue a
-session request. `/agent/*` is a separate device boundary: enrollment requires a
-single-use 120-bit code, while every other request requires a body-bound
-Ed25519 signature.
+session request. `/agent/*` is a separate device boundary: registration requires
+proof of possession of the device key, and every other request requires a
+body-bound Ed25519 signature with a replay receipt.
 
 ## Tenant and encryption boundary
 
-Every enrollment, device, grant, invitation, relay task, and MCP target is
+Every device, link code, support code, grant, invitation, relay task, and MCP target is
 scoped to a workspace. The first authenticated visit creates a deterministic
 personal workspace; owners may create additional workspaces and add members in
 the connection control center. Membership does not authorize session reads.
@@ -140,10 +176,15 @@ is not yet supported.
    payload or credential material.
 5. Confirm an unapproved OAuth identity is denied and an approved identity can
    list only the granted read-only tools.
-6. Create a short-lived invitation to a controlled email. Confirm the link is
+6. On a test device run `sessionsift support start <session-id> view 15`, enter
+   the code at `/support` with a controlled identity, confirm only that session
+   opens, a second entry of the same code is refused, and **Disconnect
+   supporter** (or `sessionsift support end <id>`) immediately denies the
+   supporter's next request.
+7. Create a short-lived invitation to a controlled email. Confirm the link is
    single-use, a different Access identity is denied, the portal exposes only
    the selected session and role operations, and revocation immediately denies
    the accepted cookie. Remove the test invitation afterward.
-7. If verification fails, restore the prior binary; the database schema is
+8. If verification fails, restore the prior binary; the database schema is
    forward-compatible in this release, and the pre-deploy backup remains the
    data rollback point.

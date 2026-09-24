@@ -1,10 +1,10 @@
 // Package api serves the localhost JSON API, hook receiver, and embedded UI.
+// @module LocalAPI routes the loopback JSON API, hook and OTLP receivers, and the embedded UI.
 package api
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -17,8 +17,8 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/agent/service"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/otel"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	"github.com/LanceSandino/sessionsift/src/internal/hooks"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
-	"github.com/LanceSandino/sessionsift/src/internal/redact"
 	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 	"github.com/LanceSandino/sessionsift/src/webui"
@@ -35,10 +35,11 @@ func HandlerWithRemote(store *storage.Store, remoteManager *remote.Manager, iden
 	return handlerWithRemoteAccess(store, remoteManager, identity, verifier, strings.TrimRight(os.Getenv("SESSIONSIFT_PUBLIC_URL"), "/"), nil)
 }
 
-// HandlerWithHostedInvites adds owner-only invitation management backed by the configured bridge.
-func HandlerWithHostedInvites(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, inviter *remote.HostedInviter) http.Handler {
+// HandlerWithHostedRuntime adds owner control of the bridge connection: device
+// registration and linking, support codes, and email invitations.
+func HandlerWithHostedRuntime(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, hosted *remote.HostedRuntime) http.Handler {
 	verifier, _ := accessauth.NewFromEnv(nil)
-	return handlerWithRemoteAccess(store, remoteManager, identity, verifier, strings.TrimRight(os.Getenv("SESSIONSIFT_PUBLIC_URL"), "/"), inviter)
+	return handlerWithRemoteAccess(store, remoteManager, identity, verifier, strings.TrimRight(os.Getenv("SESSIONSIFT_PUBLIC_URL"), "/"), hosted)
 }
 
 // HandlerWithRemoteAccess allows production Access verification and deterministic integration tests.
@@ -46,17 +47,17 @@ func HandlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 	return handlerWithRemoteAccess(store, remoteManager, identity, verifier, publicURL, nil)
 }
 
-func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, inviter *remote.HostedInviter) http.Handler {
+func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager, identity remote.Identity, verifier accessauth.Verifier, publicURL string, hosted *remote.HostedRuntime) http.Handler {
 	agent := service.NewLocal(store)
 	assets, _ := fs.Sub(webui.Assets, "dist")
 	web := webHandler(assets)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return localGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
 		switch {
 		case remoteManager != nil && (strings.HasPrefix(r.URL.Path, "/api/v1/remote/") || strings.HasPrefix(r.URL.Path, "/remote/v1/") || r.URL.Path == "/mcp"):
-			remoteRoute(store, remoteManager, identity, verifier, publicURL, inviter, w, r)
+			remoteRoute(store, remoteManager, identity, verifier, publicURL, hosted, w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource"):
 			protectedResourceMetadata(publicURL, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
@@ -69,7 +70,7 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 			analyticsReport(agent, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/protocol":
 			receiveProtocol(agent, w, r)
-		case r.Method == http.MethodPost && r.URL.Path == "/internal/hooks/codex":
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/internal/hooks/"):
 			receiveHook(store, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/logs":
 			receiveOTel(store, w, r)
@@ -94,7 +95,7 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
-	})
+	}))
 }
 
 func analyticsReport(agent *service.Service, w http.ResponseWriter, r *http.Request) {
@@ -255,6 +256,11 @@ func statusFor(status protocol.Status) int {
 }
 
 func receiveHook(store *storage.Store, w http.ResponseWriter, r *http.Request) {
+	provider, ok := hooks.ParseProvider(strings.TrimPrefix(r.URL.Path, "/internal/hooks/"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown hook provider"})
+		return
+	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.UseNumber()
 	var payload map[string]any
@@ -262,26 +268,12 @@ func receiveHook(store *storage.Store, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid hook payload"})
 		return
 	}
-	sessionID, _ := payload["session_id"].(string)
-	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_id is required"})
+	now := time.Now().UTC()
+	event, err := hooks.Normalize(provider, payload, now, strconv.FormatInt(now.UnixNano(), 10), false)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	turnID, _ := payload["turn_id"].(string)
-	kind, _ := payload["hook_event_name"].(string)
-	if kind == "" {
-		kind = "hook"
-	}
-	redacted := map[string]any{}
-	for key, value := range payload {
-		if key == "prompt" || key == "tool_input" || key == "tool_response" {
-			redacted[key] = redact.Text(fmt.Sprint(value), 2000)
-		} else if key != "transcript_path" && key != "cwd" {
-			redacted[key] = value
-		}
-	}
-	now := time.Now().UTC()
-	event := domain.Event{ID: redact.Hash(fmt.Sprintf("%s:%s:%d", sessionID, kind, now.UnixNano()))[:24], SessionID: sessionID, TurnID: turnID, Timestamp: now, EventType: "hook", EventSubtype: kind, Source: "hook", PayloadRedacted: redacted}
 	if err := store.AppendHookEvent(r.Context(), event); err != nil {
 		apiError(w, err)
 		return

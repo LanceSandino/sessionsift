@@ -39,13 +39,13 @@ func TestQueueAndEnrollmentBudgetsAreBounded(t *testing.T) {
 	for i := 0; i < 4096; i++ {
 		h.attempts[string(rune(i))] = attemptWindow{started: time.Now()}
 	}
-	if h.allowEnrollment("new-source") {
+	if h.allowAttempt("new-source") {
 		t.Fatal("enrollment map unbounded")
 	}
 	for key := range h.attempts {
 		h.attempts[key] = attemptWindow{started: time.Now().Add(-time.Hour)}
 	}
-	if !h.allowEnrollment("new-source") {
+	if !h.allowAttempt("new-source") {
 		t.Fatal("expired enrollment budget did not recover")
 	}
 }
@@ -169,7 +169,7 @@ func TestHostedAssetsAndDocumentationHaveNoIdentityData(t *testing.T) {
 	}
 }
 
-func TestEnrollmentRequiresPrivateKeyPossession(t *testing.T) {
+func TestRegistrationRequiresPrivateKeyPossession(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestEnrollmentRequiresPrivateKeyPossession(t *testing.T) {
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
 	_ = public
 	response := httptest.NewRecorder()
-	NewHandler(s, nil, "").ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/agent/v1/enroll", strings.NewReader(`{"code":"private-code","name":"Impersonated","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`)))
+	NewHandler(s, nil, "").ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/agent/v1/register", strings.NewReader(`{"name":"Impersonated","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`)))
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("missing proof=%d", response.Code)
 	}

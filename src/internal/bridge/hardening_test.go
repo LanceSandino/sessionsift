@@ -18,25 +18,35 @@ import (
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 )
 
-func TestEnrollmentCannotReplaceExistingIdentity(t *testing.T) {
+// Ownership cannot be replaced by re-registering a known public key or by a
+// second owner entering a link code the device later shows.
+func TestLinkingCannotReplaceExistingOwner(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
-	enrollment, _ := s.CreateEnrollment("owner@example.com")
-	device, err := s.Enroll(enrollment.Code, "Original", public)
-	if err != nil {
-		t.Fatal(err)
+	device := testOwnedDevice(t, s, "owner@example.com", "Original", public)
+	again, err := s.RegisterDevice("Stolen", public)
+	if err != nil || again.Owner != "owner@example.com" || again.Name != "Original" || again.WorkspaceID != device.WorkspaceID {
+		t.Fatalf("re-registration changed the device: %+v err=%v", again, err)
 	}
-	attack, _ := s.CreateEnrollment("attacker@example.com")
-	if _, err = s.Enroll(attack.Code, "Stolen", public); err == nil {
-		t.Fatal("public key replaced device owner")
+	if _, err = s.ClaimDeviceLink("attacker@example.com", testLinkCode(t, s, device.ID), ""); err == nil {
+		t.Fatal("second owner took over a linked device")
 	}
 	owned, err := s.OwnedDevices("owner@example.com")
 	if err != nil || len(owned) != 1 || owned[0].ID != device.ID {
 		t.Fatal("original ownership changed")
+	}
+	if stolen, _ := s.OwnedDevices("attacker@example.com"); len(stolen) != 0 {
+		t.Fatal("attacker owns the device")
+	}
+	if err = s.RevokeDevice(device.ID, "owner@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.RegisterDevice("Laptop", public); err == nil {
+		t.Fatal("a disconnected identity re-registered")
 	}
 }
 
@@ -48,8 +58,7 @@ func TestPairedBackupRestoresAuditAndEncryptedTasks(t *testing.T) {
 	}
 	defer s.Close()
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
-	enrollment, _ := s.CreateEnrollment("owner@example.com")
-	device, _ := s.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, s, "owner@example.com", "Laptop", public)
 	_, err = s.RegisterGrant(device.ID, "owner@example.com", []protocol.Operation{protocol.SessionGet}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -134,8 +143,7 @@ func TestSignedRequestReplayRejectedAcrossHandlers(t *testing.T) {
 	}
 	defer s.Close()
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	enrollment, _ := s.CreateEnrollment("owner@example.com")
-	device, _ := s.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, s, "owner@example.com", "Laptop", public)
 	request := signedBridgeRequest(t, private, device.ID, http.MethodGet, "/agent/v1/tasks/next", nil)
 	first := httptest.NewRecorder()
 	NewHandler(s, nil, "").ServeHTTP(first, request)

@@ -13,10 +13,12 @@ import {Sidebar,type View} from "./components/Sidebar";
 import {pushRoute,readRoute} from "./navigation";
 import type {AnalyticsReport,Session} from "./types";
 import {sessionRevision} from "./sessionRevision";
+import {sourceCounts} from "./sources";
 import "./styles.css";
 import "./responsive.css";
 import "./timeline.css";
 import "./responsive-mobile.css";
+import "./support.css";
 
 export function App(){
   const initial=readRoute();
@@ -36,8 +38,7 @@ export function App(){
   const selectSession=(id:string)=>{setSelected(id);setView("sessions");pushRoute({view:"sessions",sessionId:id})};
   const changeView=(next:View)=>{setView(next);pushRoute({view:next,sessionId:next==="sessions"?selected:undefined})};
   const visibleSessions=sessions.filter(item=>item.session_kind!=="internal_review");
-  const codexCount=visibleSessions.filter(item=>(item.source||"codex")==="codex").length;
-  const chatCount=visibleSessions.filter(item=>item.source==="chatgpt").length;
+  const counts=sourceCounts(visibleSessions);
   const layout=view==="sessions"?"sessionLayout":"focusLayout";
-  return <div className={`shell ${layout}`}><Sidebar view={view} onView={changeView} codexCount={codexCount} chatCount={chatCount}/>{view==="sessions"&&<SessionList sessions={sessions} selected={selected} onSelect={selectSession}/>}<div className={`content ${view==="sessions"?"sessionContent":""}`}>{error&&<div className="fatal"><b>Local API unavailable</b><span>{error}</span></div>}{!error&&view==="sessions"&&detail?.metrics&&<Inspector key={detail.id} session={detail} onCompare={()=>changeView("compare")}/>} {!error&&view==="sessions"&&!detail?.metrics&&<div className="loading">Importing local conversations…</div>}{!error&&view==="analytics"&&analytics&&<Analytics report={analytics}/>} {!error&&view==="analytics"&&!analytics&&<div className="loading">Calculating local aggregates…</div>}{view==="compare"&&<Compare sessions={visibleSessions} initial={visibleSessions.some(item=>item.id===selected)?selected:visibleSessions[0]?.id}/>} {view==="diagnostics"&&<Diagnostics sessions={sessions}/>} {view==="remote"&&<RemoteAccess/>} {view==="review"&&<RemoteReview/>}</div></div>
+  return <div className={`shell ${layout}`}><Sidebar view={view} onView={changeView} counts={counts}/>{view==="sessions"&&<SessionList sessions={sessions} selected={selected} onSelect={selectSession}/>}<div className={`content ${view==="sessions"?"sessionContent":""}`}>{error&&<div className="fatal"><b>Local API unavailable</b><span>{error}</span></div>}{!error&&view==="sessions"&&detail?.metrics&&<Inspector key={detail.id} session={detail} onCompare={()=>changeView("compare")}/>} {!error&&view==="sessions"&&!detail?.metrics&&<div className="loading">Importing local conversations…</div>}{!error&&view==="analytics"&&analytics&&<Analytics report={analytics}/>} {!error&&view==="analytics"&&!analytics&&<div className="loading">Calculating local aggregates…</div>}{view==="compare"&&<Compare sessions={visibleSessions} initial={visibleSessions.some(item=>item.id===selected)?selected:visibleSessions[0]?.id}/>} {view==="diagnostics"&&<Diagnostics sessions={sessions}/>} {view==="remote"&&<RemoteAccess/>} {view==="review"&&<RemoteReview/>}</div></div>
 }

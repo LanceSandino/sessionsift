@@ -20,17 +20,18 @@ func TestStoreEnrollsDeviceAndRoutesOnlyGrantedOperations(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	enrollment, err := store.CreateEnrollment("Owner@Example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
-	device, err := store.Enroll(enrollment.Code, "Developer laptop", publicKey)
-	if err != nil || device.Owner != "owner@example.com" {
+	registered, err := store.RegisterDevice("Developer laptop", publicKey)
+	if err != nil || registered.Owner != "" {
+		t.Fatalf("registered=%+v err=%v", registered, err)
+	}
+	code := testLinkCode(t, store, registered.ID)
+	device, err := store.ClaimDeviceLink("Owner@Example.com", code, "")
+	if err != nil || device.Owner != "owner@example.com" || device.ID != registered.ID {
 		t.Fatalf("device=%+v err=%v", device, err)
 	}
-	if _, err = store.Enroll(enrollment.Code, "replay", publicKey); err == nil {
-		t.Fatal("single-use enrollment code was replayed")
+	if _, err = store.ClaimDeviceLink("owner@example.com", code, ""); err == nil {
+		t.Fatal("single-use link code was replayed")
 	}
 	grant, err := store.RegisterGrant(device.ID, "reviewer@example.com", []protocol.Operation{protocol.SessionList}, time.Now().Add(time.Hour))
 	if err != nil || grant.DeviceID != device.ID {
@@ -68,9 +69,8 @@ func TestInvitationIsEmailBoundSingleUseAndSessionScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 
 	invitation, code, err := store.CreateInvitation(device.ID, "owner@example.com", "Reviewer@Example.com", "session-a", "comment", time.Now().Add(time.Hour))
 	if err != nil || code == "" || invitation.Role != "comment" {
@@ -117,9 +117,8 @@ func TestInvitationIsEmailBoundSingleUseAndSessionScoped(t *testing.T) {
 func TestInvitationValidationRejectsUnsafeScope(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	defer store.Close()
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	for _, test := range []struct {
 		owner, invitee, session, role string
 		expires                       time.Time
@@ -149,9 +148,8 @@ func TestStorePersistsDevicesGrantsAndHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	publicKey, _, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", publicKey)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", publicKey)
 	_, _ = store.RegisterGrant(device.ID, "owner@example.com", []protocol.Operation{protocol.SessionList}, time.Now().Add(time.Hour))
 	_ = store.Close()
 
@@ -181,21 +179,21 @@ func TestStoreRejectsInvalidEnrollmentGrantAndTaskInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err = store.CreateEnrollment("not-an-email"); err == nil {
-		t.Fatal("invalid enrollment owner was accepted")
-	}
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
-	if _, err = store.Enroll(enrollment.Code, "Laptop", []byte("short")); err == nil {
+	if _, err = store.RegisterDevice("Laptop", []byte("short")); err == nil {
 		t.Fatal("invalid public key was accepted")
 	}
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
-	if _, err = store.Enroll(enrollment.Code, "", public); err == nil {
+	if _, err = store.RegisterDevice("", public); err == nil {
 		t.Fatal("empty device name was accepted")
 	}
-	device, err := store.Enroll(enrollment.Code, "Laptop", public)
+	registered, err := store.RegisterDevice("Laptop", public)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = store.ClaimDeviceLink("not-an-email", testLinkCode(t, store, registered.ID), ""); err == nil {
+		t.Fatal("invalid link owner was accepted")
+	}
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	if _, err = store.RegisterGrant(device.ID, "owner@example.com", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("empty operation grant was accepted")
 	}
@@ -222,9 +220,8 @@ func TestStoreRejectsInvalidEnrollmentGrantAndTaskInputs(t *testing.T) {
 func TestStoreListsAndRevokesOwnedDeviceAndTimesOutTasks(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	defer store.Close()
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	_, _ = store.RegisterGrant(device.ID, "owner@example.com", []protocol.Operation{protocol.SessionList}, time.Now().Add(time.Hour))
 	owned, err := store.OwnedDevices("owner@example.com")
 	if err != nil || len(owned) != 1 || owned[0].ID != device.ID {
@@ -252,9 +249,8 @@ func TestStoreListsAndRevokesOwnedDeviceAndTimesOutTasks(t *testing.T) {
 func TestStoreRejectsMismatchedAndUnclaimedCompletions(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	defer store.Close()
-	enrollment, _ := store.CreateEnrollment("owner@example.com")
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	device, _ := store.Enroll(enrollment.Code, "Laptop", public)
+	device := testOwnedDevice(t, store, "owner@example.com", "Laptop", public)
 	_, _ = store.RegisterGrant(device.ID, "owner@example.com", []protocol.Operation{protocol.SessionList}, time.Now().Add(time.Hour))
 	request := protocol.Request{Version: 1, RequestID: "completion", Operation: protocol.SessionList, Arguments: json.RawMessage(`{}`)}
 	task, _ := store.Submit("owner@example.com", device.ID, request)

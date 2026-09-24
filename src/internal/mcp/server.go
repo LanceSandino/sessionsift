@@ -74,7 +74,7 @@ type tool struct {
 }
 
 var tools = []tool{
-	toolDefinition("list_sessions", "List sessions", "List redacted local Codex and ChatGPT session summaries. Results are paged; follow next_cursor until has_more is false before acting on every session.", protocol.SessionList, properties(map[string]any{"include_internal": map[string]any{"type": "boolean", "description": "Include internal review sessions."}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}})),
+	toolDefinition("list_sessions", "List sessions", "List redacted local Codex, Claude Code, ChatGPT, and Claude session summaries. Results are paged; follow next_cursor until has_more is false before acting on every session.", protocol.SessionList, properties(map[string]any{"include_internal": map[string]any{"type": "boolean", "description": "Include internal review sessions."}, "cursor": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}})),
 	toolDefinition("get_session", "Get session", "Get one redacted session with turns, events, tool calls, and findings.", protocol.SessionGet, requiredSession()),
 	toolDefinition("get_session_metrics", "Get session metrics", "Calculate token, cache, timing, and tool metrics for one session.", protocol.SessionMetrics, requiredSession()),
 	toolDefinition("get_session_timeline", "Get session timeline", "Get a bounded redacted timeline for one session.", protocol.SessionTimeline, propertiesRequired(map[string]any{"session_id": stringProperty("Session identifier."), "limit": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000}}, "session_id")),

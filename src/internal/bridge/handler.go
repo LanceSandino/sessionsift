@@ -1,3 +1,4 @@
+// @module BridgeHandler routes the hosted bridge: human console, invitations, support, MCP, and the signed device relay.
 package bridge
 
 import (
@@ -57,7 +58,7 @@ func newHandler(store *Store, verifier accessauth.Verifier, publicURL string, lo
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	securityHeaders(w)
 	switch {
-	case r.Method == http.MethodGet && (strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/invite/assets/")):
+	case r.Method == http.MethodGet && (strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/invite/assets/") || strings.HasPrefix(r.URL.Path, "/support/assets/")):
 		serveAsset(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -72,13 +73,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/docs/mcp":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, mcpDocumentation)
-	case r.Method == http.MethodPost && r.URL.Path == "/agent/v1/enroll":
-		h.enroll(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/agent/v1/register":
+		h.register(w, r)
 	case strings.HasPrefix(r.URL.Path, "/agent/v1/"):
 		h.deviceRoute(w, r)
 	case r.URL.Path == "/mcp":
 		h.loggedMCP(w, r)
-	case r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/api/v1/") || strings.HasPrefix(r.URL.Path, "/invite/"):
+	case r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/api/v1/") || strings.HasPrefix(r.URL.Path, "/invite/") || isSupportPath(r.URL.Path):
 		principal, ok := h.principal(w, r)
 		if !ok {
 			return
@@ -101,6 +102,8 @@ func (h *Handler) authenticatedRoute(w http.ResponseWriter, r *http.Request, pri
 		h.browserAPI(w, r, principal)
 	case strings.HasPrefix(r.URL.Path, "/invite/"):
 		h.invitationRoute(w, r, principal)
+	case isSupportPath(r.URL.Path):
+		h.supportRoute(w, r, principal)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -112,7 +115,7 @@ func (h *Handler) principal(w http.ResponseWriter, r *http.Request) (accessauth.
 		return accessauth.Principal{}, false
 	}
 	principal, err := h.verifier.Verify(r.Context(), r.Header.Get("Cf-Access-Jwt-Assertion"))
-	if scoped, ok := h.verifier.(*accessauth.JWTVerifier); ok && err == nil && !strings.HasPrefix(r.URL.Path, "/invite/") && !scoped.IsPrimaryAudience(principal) {
+	if scoped, ok := h.verifier.(*accessauth.JWTVerifier); ok && err == nil && !strings.HasPrefix(r.URL.Path, "/invite/") && !isSupportPath(r.URL.Path) && !scoped.IsPrimaryAudience(principal) {
 		err = errors.New("invitation audience cannot authorize account or MCP routes")
 	}
 	if err != nil {
@@ -170,21 +173,21 @@ func (h *Handler) browserAPI(w http.ResponseWriter, r *http.Request, principal a
 		}
 		err := h.store.SetMCPTarget(principal.Email, target.WorkspaceID, target.DeviceID)
 		writeResult(w, http.StatusOK, target, err)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/enrollments":
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/devices/link":
 		var body struct {
+			Code        string `json:"code"`
 			WorkspaceID string `json:"workspace_id,omitempty"`
 		}
 		if !decodeJSON(w, r, &body) {
 			return
 		}
-		var value Enrollment
-		var err error
-		if strings.TrimSpace(body.WorkspaceID) == "" {
-			value, err = h.store.CreateEnrollment(principal.Email)
-		} else {
-			value, err = h.store.CreateEnrollmentForWorkspace(principal.Email, body.WorkspaceID)
+		if !h.allowAttempt("link:" + principal.Email) {
+			w.Header().Set("Retry-After", "600")
+			writeError(w, http.StatusTooManyRequests, "too many link attempts")
+			return
 		}
-		writeResult(w, http.StatusCreated, value, err)
+		device, err := h.store.ClaimDeviceLink(principal.Email, body.Code, body.WorkspaceID)
+		writeResult(w, http.StatusOK, device, err)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/devices/"):
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/devices/")
 		err := h.store.RevokeDevice(id, principal.Email)
@@ -269,14 +272,16 @@ func (h *Handler) removeWorkspaceMember(w http.ResponseWriter, r *http.Request, 
 	writeResult(w, http.StatusOK, map[string]bool{"removed": err == nil}, err)
 }
 
-func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
-	if !h.allowEnrollment(remoteIP(r)) {
+// register accepts a Local Agent that proves possession of its Ed25519 key.
+// No account or code is needed to join, but an unlinked device can only
+// serve support codes it issues itself (see registration.go).
+func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
+	if !h.allowAttempt("register:" + remoteIP(r)) {
 		w.Header().Set("Retry-After", "600")
-		writeError(w, http.StatusTooManyRequests, "too many enrollment attempts")
+		writeError(w, http.StatusTooManyRequests, "too many registration attempts")
 		return
 	}
 	var body struct {
-		Code      string `json:"code"`
 		Name      string `json:"name"`
 		PublicKey string `json:"public_key"`
 		Proof     string `json:"proof"`
@@ -290,12 +295,12 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proof, proofErr := base64.RawURLEncoding.DecodeString(body.Proof)
-	message, _ := json.Marshal([]string{"sessionsift.enroll.v1", body.Code, body.Name, body.PublicKey})
+	message, _ := json.Marshal([]string{"sessionsift.register.v1", body.Name, body.PublicKey})
 	if proofErr != nil || !ed25519.Verify(ed25519.PublicKey(key), message, proof) {
 		writeError(w, http.StatusUnauthorized, "device key possession proof required")
 		return
 	}
-	device, err := h.store.Enroll(body.Code, body.Name, ed25519.PublicKey(key))
+	device, err := h.store.RegisterDevice(body.Name, ed25519.PublicKey(key))
 	writeResult(w, http.StatusCreated, device, err)
 }
 
@@ -379,6 +384,43 @@ func (h *Handler) deviceRoute(w http.ResponseWriter, r *http.Request) {
 			"invitation": invitation,
 			"accept_url": h.publicURL + "/invite/accept/" + code,
 		})
+	case r.Method == http.MethodGet && r.URL.Path == "/agent/v1/device":
+		device, deviceErr := h.store.DeviceInfo(deviceID)
+		writeResult(w, http.StatusOK, device, deviceErr)
+	case r.Method == http.MethodPost && r.URL.Path == "/agent/v1/links":
+		var value struct {
+			CodeHash  string    `json:"code_hash"`
+			ExpiresAt time.Time `json:"expires_at"`
+		}
+		if !decodeBytes(w, body, &value) {
+			return
+		}
+		linkErr := h.store.CreateDeviceLink(deviceID, value.CodeHash, value.ExpiresAt)
+		writeResult(w, http.StatusCreated, map[string]any{"link_url": h.publicURL + "/", "expires_at": value.ExpiresAt}, linkErr)
+	case r.Method == http.MethodPost && r.URL.Path == "/agent/v1/support":
+		var value struct {
+			ID            string    `json:"id"`
+			CodeHash      string    `json:"code_hash"`
+			SessionID     string    `json:"session_id"`
+			Role          string    `json:"role"`
+			CodeExpiresAt time.Time `json:"code_expires_at"`
+			AccessMinutes int       `json:"access_minutes"`
+		}
+		if !decodeBytes(w, body, &value) {
+			return
+		}
+		support, supportErr := h.store.RegisterSupport(deviceID, value.ID, value.CodeHash, value.SessionID, value.Role, value.CodeExpiresAt, value.AccessMinutes)
+		if supportErr != nil {
+			writeResult(w, http.StatusCreated, nil, supportErr)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"support": support, "connect_url": h.publicURL + "/support"})
+	case r.Method == http.MethodGet && r.URL.Path == "/agent/v1/support":
+		values, listErr := h.store.SupportForDevice(deviceID)
+		writeResult(w, http.StatusOK, values, listErr)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/agent/v1/support/"):
+		revokeErr := h.store.RevokeSupport(deviceID, strings.TrimPrefix(r.URL.Path, "/agent/v1/support/"), "ended_by_owner")
+		writeResult(w, http.StatusOK, map[string]bool{"revoked": revokeErr == nil}, revokeErr)
 	case r.Method == http.MethodGet && r.URL.Path == "/agent/v1/invitations":
 		values, listErr := h.store.InvitationsForDevice(deviceID)
 		writeResult(w, http.StatusOK, values, listErr)
@@ -605,7 +647,7 @@ func (h *Handler) resourceURL(r *http.Request) string {
 	return "https://" + r.Host
 }
 
-func (h *Handler) allowEnrollment(key string) bool {
+func (h *Handler) allowAttempt(key string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()

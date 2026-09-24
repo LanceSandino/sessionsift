@@ -6,8 +6,13 @@ import indexHtml from "./index.html?raw";
 const responsive=readFileSync("src/web/responsive.css","utf8");
 const timeline=readFileSync("src/web/timeline.css","utf8");
 const mobile=readFileSync("src/web/responsive-mobile.css","utf8");
+const support=readFileSync("src/web/support.css","utf8");
 
 describe("responsive layout contract",()=>{
+  it("gives the remote support card the full overview width so codes and supporter names fit",()=>{
+    expect(support).toContain(".overviewGrid .supportCard{grid-column:1/-1}");
+  });
+
   it("uses device viewport units and iPhone safe areas",()=>{
     expect(indexHtml).toContain("viewport-fit=cover");
     expect(responsive).toContain("height: 100dvh");
