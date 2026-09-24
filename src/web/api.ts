@@ -1,5 +1,5 @@
 /** @module ApiClient @description Fetches local-only SessionSift JSON resources. */
-import type { AnalyticsReport, BridgeStatus, ComparePayload, HostedInvitation, LinkOffer, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
+import type { AnalyticsReport, BridgeStatus, ComparePayload, DiagnosticsStatus, HostedInvitation, LinkOffer, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
 
 async function request<T>(path:string):Promise<T>{
   const response=await fetch(path,{headers:{Accept:"application/json"}});
@@ -17,6 +17,7 @@ export const api={
   session:(id:string)=>request<Session>(`/api/v1/sessions/${encodeURIComponent(id)}`),
   compare:(a:string,b:string)=>request<ComparePayload>(`/api/v1/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
   analytics:()=>request<AnalyticsReport>("/api/v1/analytics"),
+  diagnostics:()=>request<DiagnosticsStatus>("/api/v1/diagnostics"),
   remoteStatus:()=>request<RemoteStatus>("/api/v1/remote/status"),
   bridge:()=>request<BridgeStatus>("/api/v1/remote/bridge"),
   connectBridge:(url:string,name:string)=>send<BridgeStatus>("/api/v1/remote/bridge/connect",{url,name}),

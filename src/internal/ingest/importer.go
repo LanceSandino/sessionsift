@@ -106,7 +106,10 @@ func importExport(ctx context.Context, store *storage.Store, path string, format
 			}
 			session.Findings = findings
 			if saveErr := store.SaveImport(ctx, pathHash, fingerprint, session); saveErr != nil {
-				return result, saveErr
+				// A failure also withholds reconciliation below: the read is incomplete.
+				result.Failed++
+				result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %s: %v", document.name, session.ExternalSessionID, saveErr))
+				continue
 			}
 			result.Imported++
 		}
@@ -271,7 +274,11 @@ func ImportAll(ctx context.Context, store *storage.Store, codexHome string) (Res
 		session.Findings = findings
 		scrubWorkspace(&session)
 		if err := store.SaveImport(ctx, pathHash, quickFingerprint, session); err != nil {
-			return result, err
+			// One rejected session is reported and retried on the next pass;
+			// it must not skip every session discovered after it.
+			result.Failed++
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %v", redact.DisplayPath(source.Path), err))
+			continue
 		}
 		result.Imported++
 	}

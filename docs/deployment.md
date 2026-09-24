@@ -49,12 +49,12 @@ upstream login. The main app remains email-allowlisted for the private beta.
 ## Code-based support connections
 
 The source machine generates every code. `sessionsift agent connect <bridge>`
-(or **Remote access → Connect this device**) registers the device's Ed25519 key
+(or **Connections → Connect this device**) registers the device's Ed25519 key
 with a possession proof; no account or console code is needed, and an unlinked
 device can do nothing except serve support codes it issues itself. Registration is
 rate-limited per client IP.
 
-To share one conversation, the source owner chooses **Generate support code** (or
+To share one conversation, the source owner chooses **Support → Generate support code** (or
 `sessionsift support start <session-id>`). The device creates a 12-character
 Crockford code (60 bits), keeps only its domain-separated hash, and publishes that
 hash with the session ID, role, a ten-minute code expiry and an access length of
@@ -83,9 +83,12 @@ use for `/invite/*` (or give it its own application and append its audience to
 
 An owner creates an invitation for one session, one normalized email, one role,
 and an expiry of at most 30 days. The acceptance code is single-use and stored
-only as a hash. Successful acceptance replaces it with a random per-invitation
-cookie token, also stored only as a hash. Revocation invalidates both the bridge
-cookie and the workstation grant immediately. Invitees never receive session
+only as a hash. Opening the link is a non-consuming preview; only the invited
+identity's explicit, same-origin confirmation consumes the code. Successful
+acceptance replaces it with a random per-invitation cookie token, also stored
+only as a hash. Reopening the acceptance link in that browser returns to the
+canonical invitation. Revocation invalidates both the bridge cookie and the
+workstation grant immediately. Invitees never receive session
 listing, comparison, analytics, filesystem, process, shell, repository, or
 generic SQL access.
 

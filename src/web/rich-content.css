@@ -1,23 +1,23 @@
 /** @module RichContentStyles @description Readable inert output; wide data scrolls within its pane only. */
-.richContent{min-width:0;max-width:100%;color:inherit;font-size:13px;line-height:1.65;overflow-wrap:anywhere;white-space:normal}
-.richContent .richToolbar{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:0 0 6px;color:#9aabc3;font:10px system-ui}
-.richContent .richToolbar>span{font:inherit;letter-spacing:.03em;text-transform:none;color:inherit;white-space:nowrap}
-.richContent .richToolbar>button{width:auto;flex:0 0 auto}
-.richContent button{border:1px solid #345064;background:#152638;color:#b5e7ed;border-radius:7px;padding:5px 9px;cursor:pointer;font:11px system-ui}
-.richContent :is(p,ul,ol,blockquote,pre,table){margin:8px 0;white-space:normal}
-.richContent :is(h1,h2,h3,h4){font-size:1.12em;line-height:1.4;margin:16px 0 7px;letter-spacing:0}
-.richContent h1{font-size:1.35em}.richContent h2{font-size:1.2em}
-.richContent li{margin:4px 0}.richContent :is(ul,ol){padding-left:24px}
-.richContent a{color:#7dd3ec;text-decoration:underline;text-underline-offset:3px}
-.richContent blockquote{margin-inline:0;padding:4px 14px;border-left:3px solid #08b6c4;background:#0b2530}
-.richContent pre,.richContent .richCode{max-width:100%;max-height:none;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2;background:#081321;border:1px solid #294252;border-radius:10px;padding:12px;color:#c6dfeb;font:12px/1.65 ui-monospace,SFMono-Regular,monospace}
-.richContent code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.92em;color:#aedee8}
-.richContent :not(pre)>code{padding:2px 5px;border-radius:4px;background:#0b2133}
-.richContent .richTable{width:100%;overflow-x:auto;overscroll-behavior-inline:contain}
-.richContent table{border-collapse:collapse;width:100%;font-size:12px}.richContent th,.richContent td{padding:8px 12px;border:1px solid #294252;text-align:left}
-.richContent th{background:#152c3e}.richContent .blockedImage{color:#9aabc3;font-style:italic}
-.richContent :is(button,a):focus-visible{outline:2px solid #7dd3ec;outline-offset:3px}
+.richContent{position:relative;min-width:0;max-width:100%;color:inherit;font-size:inherit;line-height:inherit;overflow-wrap:anywhere;white-space:normal}
+.richContent .richToolbar{position:absolute;top:-4px;right:0;display:flex;gap:6px;align-items:center;opacity:0;transition:opacity .12s;z-index:1;background:var(--paper);border:1px solid var(--line);border-radius:4px;padding:1px 2px 1px 6px;color:var(--muted);font:9px var(--sans)}
+.richContent:hover>.richToolbar,.richContent:focus-within>.richToolbar{opacity:1}
+.richContent .richToolbar>span{letter-spacing:.03em;white-space:nowrap}
+.richContent .richToolbar>button{border:0;background:var(--soft);color:var(--accent);border-radius:3px;padding:2px 6px;cursor:pointer;font:inherit}
+.richContent :is(p,ul,ol,blockquote,pre,table){margin:0 0 10px;white-space:normal}
+.richContent>:last-child,.richContent>div:last-child>:last-child{margin-bottom:0}
+.richContent :is(h1,h2,h3,h4){font-size:1.08em;line-height:1.4;margin:14px 0 6px;letter-spacing:0}
+.richContent h1{font-size:1.25em}.richContent h2{font-size:1.15em}
+.richContent li{margin:3px 0}.richContent :is(ul,ol){padding-left:22px}
+.richContent a{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
+.richContent blockquote{margin-inline:0;padding:4px 12px;border-left:3px solid var(--accent);background:var(--soft);color:var(--muted)}
+.richContent pre,.richContent .richCode{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2;background:var(--code);border:1px solid var(--line);border-radius:5px;padding:10px 12px;color:var(--ink);font:11px/1.7 var(--mono)}
+.richContent code{font-family:var(--mono);font-size:.9em}
+.richContent :not(pre)>code{padding:2px 4px;border-radius:3px;background:var(--code)}
+.richContent .richTable{width:100%;overflow-x:auto;overscroll-behavior-inline:contain;margin:0 0 10px}
+.richContent table{border-collapse:collapse;width:100%;font-size:.92em;margin:0}.richContent th,.richContent td{padding:6px 10px;border:1px solid var(--line);text-align:left}
+.richContent th{background:var(--soft);text-transform:none;letter-spacing:0;font-size:inherit;color:var(--ink)}
+.richContent .blockedImage{color:var(--muted);font-style:italic}
 .richContent input[type=checkbox]{pointer-events:none}
-.inspectorActions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.secondaryButton,.diagnosticExport button{min-height:38px;border:1px solid #345064;border-radius:9px;padding:7px 12px;background:#14283b;color:#b5e7ed;cursor:pointer}
-.sharingPreview{border:1px solid #294252;border-radius:10px;padding:12px;margin:12px 0}.sharingPreview summary{cursor:pointer;color:#9adce6}.sharingPreviewScroll{max-height:40dvh;overflow:auto;overscroll-behavior:contain;padding:8px}.sharingPreview article{border-bottom:1px solid #294252;padding:10px 0}.shareConfirm{display:flex;align-items:flex-start;gap:9px;font-size:12px;line-height:1.5;margin:12px 0}.shareConfirm input{flex:0 0 auto;margin-top:3px}.diagnosticExport{margin-top:16px}.diagnosticExport pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#081321;padding:14px;border-radius:10px;color:#aedee8}
-@media(max-width:799px){.richContent{font-size:14px}.richContent button{min-height:36px}.richContent pre{font-size:12px}}
+.richContent .richExpand{display:inline-flex;margin-top:4px;border:1px solid var(--line);background:var(--paper);color:var(--accent);border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer}
+.richContent>small{display:block;color:var(--muted);font-size:10px;margin-top:4px}

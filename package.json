@@ -14,7 +14,7 @@
     "test": "npm run typecheck && npm run test:web && npm run build:web && npm run test:go",
     "test:go": "GOMODCACHE=$PWD/.cache/go-mod GOCACHE=$PWD/.cache/go-build go test ./... -coverprofile=coverage.out && GOMODCACHE=$PWD/.cache/go-mod GOCACHE=$PWD/.cache/go-build go tool cover -func=coverage.out | awk '/^total:/ { gsub(\"%\", \"\", $3); if ($3 + 0 < 85) exit 1; print \"Go statement coverage: \" $3 \"%\" }'",
     "test:mutation": "stryker run",
-    "test:mutation:unit": "vitest run --config src/web/vite.config.ts components/sessionFilters.test.ts components/timelineWindow.test.ts components/timelineJourney.test.ts supportState.test.ts",
+    "test:mutation:unit": "vitest run --config src/web/vite.config.ts --environment node components/sessionFilters.test.ts components/sessionSort.test.ts components/timelineWindow.test.ts components/timelineJourney.test.ts supportState.test.ts sessionEvidence.test.ts reviewState.test.ts libraryGroups.test.ts",
     "test:web": "vitest run --config src/web/vite.config.ts --coverage",
     "test:watch": "vitest --config src/web/vite.config.ts",
     "coverage": "npm test",

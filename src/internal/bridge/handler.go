@@ -434,11 +434,38 @@ func (h *Handler) deviceRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) invitationRoute(w http.ResponseWriter, r *http.Request, principal accessauth.Principal) {
-	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/invite/accept/") {
+	if strings.HasPrefix(r.URL.Path, "/invite/accept/") {
 		code := strings.TrimPrefix(r.URL.Path, "/invite/accept/")
+		if r.Method == http.MethodGet {
+			invitation, err := h.store.InvitationForAcceptance(code, principal.Email)
+			if err != nil {
+				writeInvitationPage(w, http.StatusForbidden, "Invitation unavailable", "This invitation is invalid, expired, revoked, or assigned to another account.", false)
+				return
+			}
+			if invitation.AcceptedAt != nil {
+				if token, ok := invitationToken(r, invitation.ID); ok {
+					if _, sessionErr := h.store.invitationSession(principal.Email, invitation.ID, token); sessionErr == nil {
+						http.Redirect(w, r, "/invite/"+invitation.ID, http.StatusSeeOther)
+						return
+					}
+				}
+				writeInvitationPage(w, http.StatusConflict, "Invitation already accepted", "Reopen this invitation in the browser where it was accepted, or ask the owner to revoke it and send a new invitation.", false)
+				return
+			}
+			writeInvitationPage(w, http.StatusOK, "Session invitation", "Confirm to accept this private, single-session invitation. Open shared links in Safari or Chrome rather than an in-app browser.", true)
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !sameOriginRequest(r, h.resourceURL(r)) {
+			writeError(w, http.StatusForbidden, "cross-site request denied")
+			return
+		}
 		invitation, token, err := h.store.AcceptInvitation(code, principal.Email)
 		if err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
+			writeInvitationPage(w, http.StatusForbidden, "Invitation unavailable", "This invitation is invalid, expired, revoked, already accepted, or assigned to another account.", false)
 			return
 		}
 		maxAge := int(time.Until(invitation.ExpiresAt).Seconds())
@@ -495,6 +522,14 @@ func (h *Handler) invitationRoute(w http.ResponseWriter, r *http.Request, princi
 		return
 	}
 	writeError(w, http.StatusNotFound, "not found")
+}
+
+func writeInvitationPage(w http.ResponseWriter, status int, title, message string, confirm bool) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+	w.WriteHeader(status)
+	page := invitationMessagePage(title, message, confirm)
+	_, _ = io.WriteString(w, page)
 }
 
 func invitationPath(path string) (string, string, bool) {

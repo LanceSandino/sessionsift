@@ -10,14 +10,16 @@ export function safeContentURL(value:string):string {
  try {const url=new URL(value);return url.protocol==="https:"&&!url.username&&!url.password?url.href:""} catch {return ""}
 }
 
-export function RichContent({text}:{text:string}){
+/** Tool arguments and results read best as their original lines, so non-JSON evidence opens in source view. */
+export function RichContent({text,preformatted=false}:{text:string;preformatted?:boolean}){
  const[expanded,setExpanded]=useState(false);
- const[source,setSource]=useState(false);
+ const[sourceChoice,setSource]=useState<boolean>();
  const visible=text.slice(0,expanded?displayLimit:previewLimit);
  const json=useMemo(()=>{
   if(!/^[\s]*[\[{]/.test(visible))return null;
   try{return JSON.stringify(JSON.parse(visible),null,2)}catch{return null}
  },[visible]);
+ const source=sourceChoice??(preformatted&&!json);
  return <div className="richContent">
   <div className="richToolbar"><span>{source?"Source":json?"JSON":"Formatted"}</span><button type="button" aria-label={source?"Show formatted content":"Show source"} onClick={()=>setSource(!source)}>{source?"Formatted":"Source"}</button></div>
   {source||json?<pre className="richCode"><code>{source?visible:json}</code></pre>:<Markdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={safeContentURL} components={{

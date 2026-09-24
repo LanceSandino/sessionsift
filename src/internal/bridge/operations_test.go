@@ -5,11 +5,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -166,6 +169,49 @@ func TestHostedAssetsAndDocumentationHaveNoIdentityData(t *testing.T) {
 	policy := hostedCSP()
 	if strings.Contains(policy, "script-src 'unsafe-inline'") || !strings.Contains(policy, "'sha256-") || !strings.Contains(policy, "object-src 'none'") {
 		t.Fatal("unsafe CSP")
+	}
+}
+
+func TestHostedInlineScriptsParseAndMatchCSP(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required to validate hosted JavaScript syntax")
+	}
+	policy := hostedCSP()
+	for name, page := range map[string]string{"connect": hostedPage(connectPage), "invite": hostedPage(invitePage)} {
+		rest := page
+		inlineCount := 0
+		for {
+			_, afterOpen, found := strings.Cut(rest, "<script")
+			if !found {
+				break
+			}
+			attributes, body, found := strings.Cut(afterOpen, ">")
+			if !found {
+				t.Fatalf("%s page has an unterminated script tag", name)
+			}
+			script, afterClose, found := strings.Cut(body, "</script>")
+			if !found {
+				t.Fatalf("%s page has an unterminated script body", name)
+			}
+			rest = afterClose
+			if strings.Contains(attributes, "src=") {
+				continue
+			}
+			inlineCount++
+			command := exec.Command("node", "--check")
+			command.Stdin = strings.NewReader(script)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("%s inline script is invalid: %v\n%s", name, err, output)
+			}
+			digest := sha256.Sum256([]byte(script))
+			hash := "'sha256-" + base64.StdEncoding.EncodeToString(digest[:]) + "'"
+			if !strings.Contains(policy, hash) {
+				t.Fatalf("%s inline script hash is missing from CSP", name)
+			}
+		}
+		if inlineCount == 0 {
+			t.Fatalf("%s page has no inline bootstrap script", name)
+		}
 	}
 }
 

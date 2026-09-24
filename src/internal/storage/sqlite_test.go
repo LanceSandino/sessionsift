@@ -83,6 +83,70 @@ func TestHealthIsNotStarvedByActiveIngestionConnection(t *testing.T) {
 	}
 }
 
+func TestCaptureStatsReportsOnlySourceCountsAndRecency(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sessionsift.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	empty, err := store.CaptureStats(ctx)
+	if err != nil || empty.OTelEvents != 0 || empty.HookEvents != 0 {
+		t.Fatalf("empty stats=%+v err=%v", empty, err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, event := range []domain.Event{
+		{ID: "capture-hook", SessionID: "capture-session", Timestamp: now, EventType: "hook", Source: "hook"},
+		{ID: "capture-otel", SessionID: "capture-session", Timestamp: now.Add(time.Second), EventType: "otel", Source: "otel"},
+	} {
+		if err := store.AppendHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats, err := store.CaptureStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.HookEvents != 1 || stats.OTelEvents != 1 || stats.LatestHookEventAt == nil || stats.LatestOTelEventAt == nil {
+		t.Fatalf("stats=%+v", stats)
+	}
+	if !stats.LatestHookEventAt.Equal(now) || !stats.LatestOTelEventAt.Equal(now.Add(time.Second)) {
+		t.Fatalf("unexpected recency: %+v", stats)
+	}
+}
+
+// Regression anchor for CU-20260924-008: hooks replayed from the spool and Claude Code
+// hooks are capture activity too; counting only live Codex hooks reported them as idle.
+func TestCaptureStatsCountsSpooledAndClaudeCodeHooks(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sessionsift.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, event := range []domain.Event{
+		{ID: "codex-live", SessionID: "s", Timestamp: now, EventType: "hook", Source: "hook"},
+		{ID: "codex-spooled", SessionID: "s", Timestamp: now.Add(time.Second), EventType: "hook", Source: "hook_spool"},
+		{ID: "claude-live", SessionID: "c", Timestamp: now.Add(2 * time.Second), EventType: "hook", Source: "claude_hook"},
+		{ID: "claude-spooled", SessionID: "c", Timestamp: now.Add(3 * time.Second), EventType: "hook", Source: "claude_hook_spool"},
+	} {
+		if err := store.AppendHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats, err := store.CaptureStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.HookEvents != 2 || stats.LatestHookEventAt == nil || !stats.LatestHookEventAt.Equal(now.Add(time.Second)) {
+		t.Fatalf("Codex hooks = %d at %v, want 2 at the spooled event", stats.HookEvents, stats.LatestHookEventAt)
+	}
+	if stats.ClaudeHookEvents != 2 || stats.LatestClaudeHookEventAt == nil || !stats.LatestClaudeHookEventAt.Equal(now.Add(3*time.Second)) {
+		t.Fatalf("Claude Code hooks = %d at %v, want 2 at the spooled event", stats.ClaudeHookEvents, stats.LatestClaudeHookEventAt)
+	}
+}
+
 func TestSaveImportIsIdempotentAndQueryable(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

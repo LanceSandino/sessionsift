@@ -24,6 +24,24 @@ type Result struct {
 	OTelChanged  bool
 }
 
+type hookPolicy struct {
+	Event     string
+	Matcher   string
+	Timeout   int
+	OmitAsync bool
+}
+
+var sessionSiftHookPolicies = []hookPolicy{
+	{Event: "SessionStart", Timeout: 10},
+	{Event: "UserPromptSubmit", Timeout: 10},
+	{Event: "PostToolUse", Matcher: "*", Timeout: 10},
+	{Event: "PreCompact", Matcher: "*", Timeout: 10},
+	{Event: "PostCompact", Matcher: "*", Timeout: 10},
+	{Event: "Stop", Timeout: 10},
+	{Event: "SessionEnd", Matcher: "*", Timeout: 3, OmitAsync: true},
+	{Event: "Interrupt", Timeout: 3},
+}
+
 // Enable merges SessionSift entries without replacing existing Codex settings.
 func Enable(codexHome, binaryPath string) (Result, error) {
 	if !filepath.IsAbs(binaryPath) {
@@ -106,16 +124,22 @@ func mergeHooks(body []byte, binaryPath string) ([]byte, bool, error) {
 	}
 	command := shellQuote(binaryPath) + " hook"
 	changed := false
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "PreCompact", "PostCompact", "Stop", "SessionEnd", "Interrupt"} {
-		entries, _ := hooks[event].([]any)
-		if hookCommandExists(entries, command) {
+	for _, policy := range sessionSiftHookPolicies {
+		entries, _ := hooks[policy.Event].([]any)
+		found, repaired := reconcileHookPolicy(entries, command, policy)
+		if found {
+			changed = changed || repaired
 			continue
 		}
-		entry := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command, "async": true, "timeout": 10}}}
-		if event == "PostToolUse" || event == "PreCompact" || event == "PostCompact" || event == "SessionEnd" {
-			entry["matcher"] = "*"
+		handler := map[string]any{"type": "command", "command": command, "timeout": policy.Timeout}
+		if !policy.OmitAsync {
+			handler["async"] = true
 		}
-		hooks[event] = append(entries, entry)
+		entry := map[string]any{"hooks": []any{handler}}
+		if policy.Matcher != "" {
+			entry["matcher"] = policy.Matcher
+		}
+		hooks[policy.Event] = append(entries, entry)
 		changed = true
 	}
 	if !changed {
@@ -128,18 +152,44 @@ func mergeHooks(body []byte, binaryPath string) ([]byte, bool, error) {
 	return append(encoded, '\n'), true, nil
 }
 
-func hookCommandExists(entries []any, command string) bool {
+func reconcileHookPolicy(entries []any, command string, policy hookPolicy) (bool, bool) {
+	found, changed := false, false
 	for _, value := range entries {
 		entry, _ := value.(map[string]any)
 		handlers, _ := entry["hooks"].([]any)
 		for _, handlerValue := range handlers {
 			handler, _ := handlerValue.(map[string]any)
-			if handler["command"] == command {
-				return true
+			if handler["command"] != command {
+				continue
+			}
+			found = true
+			if !timeoutEquals(handler["timeout"], policy.Timeout) {
+				handler["timeout"] = policy.Timeout
+				changed = true
+			}
+			if policy.OmitAsync {
+				if _, exists := handler["async"]; exists {
+					delete(handler, "async")
+					changed = true
+				}
+			} else if async, ok := handler["async"].(bool); !ok || !async {
+				handler["async"] = true
+				changed = true
 			}
 		}
 	}
-	return false
+	return found, changed
+}
+
+func timeoutEquals(value any, want int) bool {
+	switch number := value.(type) {
+	case float64:
+		return number == float64(want)
+	case int:
+		return number == want
+	default:
+		return false
+	}
 }
 
 func shellQuote(value string) string {

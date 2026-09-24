@@ -1,60 +1,77 @@
-/** @module Timeline @description Presents a prompt-centered work journey with summarized evidence and expanded navigation. */
-import React,{useEffect,useMemo,useRef,useState} from "react";
-import {absoluteTime,duration} from "../format";
-import type {Session,Turn} from "../types";
-import {scrollToCheckpoint,useLatestScroll} from "../useLatestScroll";
-import {buildTimelineJourney,type JourneyCheckpoint} from "./timelineJourney";
-import {latestWindow} from "./timelineWindow";
+/** @module Timeline @description The prompt-centred work journey: each checkpoint summarizes its activity and lists bounded, selectable evidence. */
+import React,{useEffect,useMemo,useState} from "react";
+import {absoluteTime,clockTime,excerpt,twoDigits} from "../format";
+import {callLabel,callStatus,phaseOf,transportLabel} from "../sessionEvidence";
+import type {Session,ToolCall} from "../types";
 import {observedUsageDelta,usageDeltaLabel} from "../usageMetrics";
+import {scrollToCheckpoint} from "../useLatestScroll";
+import type {Evidence,WorkspaceActions} from "../workspace";
+import {Icon,type IconName} from "./Icon";
+import {buildTimelineJourney,journeyEntries,type JourneyCheckpoint,type JourneyFilter} from "./timelineJourney";
+import {latestWindow} from "./timelineWindow";
 
-export function Timeline({session,onTurn,expanded=false}:{session:Session;onTurn:(turn:Turn)=>void;expanded?:boolean}){
-  const[limit,setLimit]=useState(8);
-  const viewport=useRef<HTMLDivElement>(null);
+const entryCap=8;
+const phaseIcons:Record<string,IconName>={explore:"search",edit:"file",validate:"circle-check",run:"terminal",external:"link"};
+
+type Props={session:Session;selected?:Evidence;viewport:React.RefObject<HTMLElement|null>;actions:Pick<WorkspaceActions,"selectEvidence">};
+
+export function timelineID(sessionID:string,turnID:string){return `timeline-${sessionID}-${turnID}`}
+
+export function Timeline({session,selected,viewport,actions}:Props){
   const journey=useMemo(()=>buildTimelineJourney(session),[session]);
+  const[limit,setLimit]=useState(8);
+  const[filter,setFilter]=useState<JourneyFilter>("all");
+  const[expanded,setExpanded]=useState<Set<string>>(()=>new Set());
+  useEffect(()=>{setLimit(8);setExpanded(new Set())},[session.id]);
   const{shown,remaining}=latestWindow(journey,limit);
-  useLatestScroll(viewport,session.id);
-  useEffect(()=>setLimit(8),[session.id]);
-
+  const failedTotal=journey.reduce((sum,checkpoint)=>sum+checkpoint.failedCount,0);
   const jumpTo=(id:string)=>{
-    if(!id)return;
-    scrollToCheckpoint(`timeline-checkpoint-${session.id}-${id}`,viewport.current);
+    const index=journey.findIndex(checkpoint=>checkpoint.id===id);
+    if(index<0)return;
+    if(journey.length-index>limit)setLimit(journey.length-index);
+    requestAnimationFrame(()=>scrollToCheckpoint(timelineID(session.id,id),viewport.current));
   };
-
-  return <section className={`card timelineCard ${expanded?"expandedTimeline":""}`}>
-    <div className="sectionTitle timelineHeading"><div><h3>Work journey</h3><small className="timelineStart">Started {absoluteTime(session.started_at)}</small></div><span className="pill">{journey.length} prompts</span></div>
-    <div className="timelineToolbar">
-      <label className="jumpControl"><span>Jump to prompt</span><select aria-label="Jump to timeline prompt" defaultValue="" onChange={event=>jumpTo(event.target.value)}><option value="">Choose a visible prompt</option>{shown.map(checkpoint=><option key={checkpoint.id} value={checkpoint.id}>Prompt {checkpoint.sequence} · {clockTime(checkpoint.startedAt)}</option>)}</select></label>
-      <button className="secondaryButton latestButton" onClick={()=>{if(viewport.current)viewport.current.scrollTop=viewport.current.scrollHeight}}>Latest checkpoint</button>
-      <div className="timelineSummary" aria-label="Timeline evidence summary"><span><b>{journey.length}</b> prompt checkpoints</span><span><b>{(session.tool_calls||[]).length.toLocaleString()}</b> tool calls summarized</span><span><b>{(session.tool_calls||[]).filter(call=>!call.success).length}</b> failed</span></div>
-    </div>
-    <div className="timelineJourneyLayout">
-      {expanded&&<aside className="timelineNavigator" aria-label="Timeline checkpoints"><header><b>Prompt index</b><small>{clockTime(session.started_at)} – {clockTime(session.ended_at)}</small></header><div>{shown.map(checkpoint=><button key={checkpoint.id} type="button" onClick={()=>jumpTo(checkpoint.id)}><span>{checkpoint.sequence}</span><span><b>{clockTime(checkpoint.startedAt)}</b><small>{checkpoint.prompt}</small></span></button>)}</div></aside>}
-      <div ref={viewport} className="timeline timelineScroll scrollViewport" aria-label="Conversation timeline entries" data-start-position="latest">
-        {remaining>0&&<button className="loadMore" onClick={()=>setLimit(journey.length)}>Show {remaining} earlier checkpoints</button>}
-        {shown.map(checkpoint=><Checkpoint key={checkpoint.id} checkpoint={checkpoint} sessionID={session.id} expanded={expanded} onTurn={onTurn}/>)}
-        {shown.length===0&&<p className="empty">No prompt checkpoints available.</p>}
+  return <div className="content-page" aria-label="Timeline">
+    <div className="page-intro"><h2>The work, in order.</h2><p>Prompt checkpoints, tool activity and recorded events. Started {absoluteTime(session.started_at)}.</p></div>
+    <div className="page-toolbar">
+      <div className="filter-row" role="group" aria-label="Timeline filter">
+        <button type="button" className={`filter ${filter==="all"?"active":""}`} aria-pressed={filter==="all"} onClick={()=>setFilter("all")}>All activity</button>
+        <button type="button" className={`filter ${filter==="failed"?"active":""}`} aria-pressed={filter==="failed"} onClick={()=>setFilter("failed")}>Failed calls <span className="mono">{failedTotal}</span></button>
       </div>
+      {journey.length>1&&<select className="jump-select" aria-label="Jump to timeline prompt" value="" onChange={event=>{if(event.target.value)jumpTo(event.target.value)}}><option value="">Jump to prompt…</option>{journey.map(checkpoint=><option key={checkpoint.id} value={checkpoint.id}>Prompt {checkpoint.sequence} · {clockTime(checkpoint.startedAt)}</option>)}</select>}
     </div>
+    {remaining>0&&<button type="button" className="load-more" onClick={()=>setLimit(journey.length)}>Show {remaining} earlier checkpoints</button>}
+    {shown.map(checkpoint=><Checkpoint key={checkpoint.id} sessionID={session.id} checkpoint={checkpoint} filter={filter} expanded={expanded.has(checkpoint.id)} selected={selected} onExpand={()=>setExpanded(value=>new Set(value).add(checkpoint.id))} onSelect={actions.selectEvidence}/>)}
+    {journey.length===0&&<p className="empty">No prompt checkpoints available.</p>}
+  </div>;
+}
+
+function Checkpoint({sessionID,checkpoint,filter,expanded,selected,onExpand,onSelect}:{sessionID:string;checkpoint:JourneyCheckpoint;filter:JourneyFilter;expanded:boolean;selected?:Evidence;onExpand:()=>void;onSelect:(evidence:Evidence)=>void}){
+  const{shown,hidden}=journeyEntries(checkpoint,filter,expanded?Number.MAX_SAFE_INTEGER:entryCap);
+  const categories=Object.entries(checkpoint.categories).sort((a,b)=>b[1]-a[1]).slice(0,4);
+  const usage=observedUsageDelta(checkpoint.turn);
+  return <section className={`timeline-group ${checkpoint.failedCount?"has-failure":""}`} id={timelineID(sessionID,checkpoint.id)}>
+    <button type="button" className="timeline-heading" aria-label={`Open prompt ${checkpoint.sequence}: ${excerpt(checkpoint.prompt,120)}`} onClick={()=>onSelect({kind:"turn",id:checkpoint.id})}><span className="number">{twoDigits(checkpoint.sequence)}</span><h3>{excerpt(checkpoint.prompt,110)||"Redacted prompt"}</h3><time dateTime={checkpoint.startedAt}>{clockTime(checkpoint.startedAt)}</time></button>
+    <div className="timeline-summary">
+      <span>{checkpoint.turn.model||"model unavailable"} · {checkpoint.turn.reasoning_effort?`${checkpoint.turn.reasoning_effort} effort`:"effort unreported"}</span>
+      <span>{checkpoint.toolCount.toLocaleString()} tool calls</span>
+      {categories.map(([category,count])=><span key={category}>{count.toLocaleString()} {category}</span>)}
+      {checkpoint.mcpCount>0&&<span>{checkpoint.mcpCount.toLocaleString()} MCP</span>}
+      {checkpoint.failedCount>0&&<span className="warn-text">{checkpoint.failedCount} failed</span>}
+      {usage!==undefined&&<span title="Observed account-wide rate-meter movement; concurrent chats may contribute.">{usageDeltaLabel(usage)} usage</span>}
+    </div>
+    {shown.map(entry=>entry.kind==="call"?<CallRow key={entry.call.id} call={entry.call} selected={selected?.kind==="tool"&&selected.id===entry.call.id} onSelect={onSelect}/>:entry.note.compaction?<div className="compact-boundary" key={entry.note.id}><Icon name="compact"/>{entry.note.kind.toLowerCase()} · recorded boundary</div>:<div className="timeline-event note" key={entry.note.id}><time>{clockTime(entry.at)}</time><Icon name={entry.note.kind==="STEER / QUEUE"?"steer":"spark"}/><div className="grow"><strong>{excerpt(entry.note.text,140)}</strong><small>{entry.note.kind}</small></div></div>)}
+    {hidden>0&&<button type="button" className="timeline-more" onClick={onExpand}>Show all {(checkpoint.calls.length+checkpoint.notes.length).toLocaleString()} events</button>}
+    {filter==="failed"&&shown.length===0&&<div className="timeline-none">No failed calls in this checkpoint.</div>}
+    {filter==="all"&&shown.length===0&&<div className="timeline-none">No tool activity or events were recorded for this prompt.</div>}
   </section>;
 }
 
-function Checkpoint({checkpoint,sessionID,expanded,onTurn}:{checkpoint:JourneyCheckpoint;sessionID:string;expanded:boolean;onTurn:(turn:Turn)=>void}){
-  const categories=Object.entries(checkpoint.categories).sort((a,b)=>b[1]-a[1]);
-  const notes=expanded?checkpoint.notes:checkpoint.notes.slice(0,2);
-  const usageDelta=observedUsageDelta(checkpoint.turn);
-  return <article id={`timeline-checkpoint-${sessionID}-${checkpoint.id}`} className={`journeyCheckpoint ${checkpoint.failedCount?"hasFailure":""}`}>
-    <div className="journeyRail" aria-hidden="true"><span>{checkpoint.sequence}</span></div>
-    <button className="journeyPrompt" type="button" aria-label={`Open prompt ${checkpoint.sequence}: ${checkpoint.prompt}`} onClick={()=>onTurn(checkpoint.turn)}>
-      <header><span className="journeyLabel">Prompt {checkpoint.sequence}</span><time dateTime={checkpoint.startedAt} title={absoluteTime(checkpoint.startedAt)}>{clockTime(checkpoint.startedAt)}</time><small>{duration(Math.max(0,new Date(checkpoint.endedAt).getTime()-new Date(checkpoint.startedAt).getTime()))}</small></header>
-      <p>{checkpoint.prompt}</p>
-      <div className="journeyStats"><span className="settingStat">{checkpoint.turn.model||"model unavailable"} · {checkpoint.turn.reasoning_effort||"effort unavailable"}</span>{usageDelta!==undefined&&<span className="usageStat" title="Observed account-wide rate-meter movement; concurrent chats may contribute.">{usageDeltaLabel(usageDelta)} usage</span>}<span className="primaryStat">{checkpoint.toolCount.toLocaleString()} tool calls</span>{categories.slice(0,expanded?6:3).map(([category,count])=><span key={category}>{count.toLocaleString()} {category}</span>)}{checkpoint.mcpCount>0&&<span>{checkpoint.mcpCount.toLocaleString()} MCP</span>}{checkpoint.failedCount>0&&<span className="failureStat">{checkpoint.failedCount} failed</span>}</div>
-      {notes.length>0&&<div className="journeyNotes">{notes.map(note=><span key={note.id}><b>{note.kind}</b>{note.text}</span>)}{!expanded&&checkpoint.notes.length>notes.length&&<small>+{checkpoint.notes.length-notes.length} more notable events</small>}</div>}
-    </button>
-  </article>;
-}
-
-function clockTime(value:string){
-  const date=new Date(value);
-  if(Number.isNaN(date.getTime()))return "Unknown time";
-  return new Intl.DateTimeFormat(undefined,{hour:"numeric",minute:"2-digit",second:"2-digit"}).format(date);
+function CallRow({call,selected,onSelect}:{call:ToolCall;selected:boolean;onSelect:(evidence:Evidence)=>void}){
+  const status=callStatus(call);
+  return <button type="button" className={`timeline-event ${call.success?"":"failed"}`} aria-current={selected?"true":undefined} onClick={()=>onSelect({kind:"tool",id:call.id})}>
+    <time>{clockTime(call.timestamp)}</time><Icon name={call.success?phaseIcons[phaseOf(call)||""]||"tool":"warning"}/>
+    <div className="grow"><strong>{callLabel(call)}</strong><small>{call.tool_name} · {transportLabel(call)}{call.tool_server?` · ${call.tool_server}`:""}</small></div>
+    <span className={`badge ${status==="Failed"?"warn":status==="Passed"?"good":""}`}>{status}</span>
+  </button>;
 }

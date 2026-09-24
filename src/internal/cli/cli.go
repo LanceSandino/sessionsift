@@ -286,8 +286,24 @@ func importAndWatchCodex(ctx context.Context, store *storage.Store, home string,
 		}
 	} else {
 		fmt.Fprintf(out, "Imported %d of %d discovered sessions (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
+		reportImportFailures(errOut, "Codex", result)
 	}
 	watchCodex(ctx, store, home, errOut)
+}
+
+// maxReportedImportWarnings bounds the startup failure report.
+const maxReportedImportWarnings = 5
+
+// reportImportFailures keeps failed sessions visible now that one failure no
+// longer aborts an import pass; failed sources keep no fingerprint and retry.
+func reportImportFailures(errOut io.Writer, label string, result ingest.Result) {
+	if result.Failed == 0 {
+		return
+	}
+	fmt.Fprintf(errOut, "%s import: %d could not be imported and will be retried.\n", label, result.Failed)
+	for _, warning := range result.Warnings[:min(len(result.Warnings), maxReportedImportWarnings)] {
+		fmt.Fprintf(errOut, "  %s\n", warning)
+	}
 }
 
 func importAndWatchChatGPT(ctx context.Context, store *storage.Store, path string, out, errOut io.Writer) {
@@ -298,6 +314,7 @@ func importAndWatchChatGPT(ctx context.Context, store *storage.Store, path strin
 		}
 	} else {
 		fmt.Fprintf(out, "Imported %d of %d ChatGPT conversations (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
+		reportImportFailures(errOut, "ChatGPT", result)
 	}
 	watchChatGPT(ctx, store, path, errOut)
 }
@@ -693,7 +710,7 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 		history = "available\t✓"
 	}
 	collector := "not running\t!"
-	if response, healthErr := getHealth(); healthErr == nil {
+	if response, healthErr := getCollectorHealth(); healthErr == nil {
 		response.Body.Close()
 		if response.StatusCode == http.StatusOK {
 			collector = "running\t✓"
@@ -821,14 +838,14 @@ func enableSetup(out, errOut io.Writer) int {
 const hookSnippet = `Review this configuration, then merge it into ~/.codex/hooks.json:
 {
   "hooks": {
-    "SessionStart": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true}]}],
-    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true}]}],
-    "PostToolUse": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook","async":true}]}],
-    "PreCompact": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook","async":true}]}],
-    "PostCompact": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook","async":true}]}],
-    "Stop": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true}]}],
-    "SessionEnd": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook"}]}],
-    "Interrupt": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true}]}]
+    "SessionStart": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true,"timeout":10}]}],
+    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true,"timeout":10}]}],
+    "PostToolUse": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook","async":true,"timeout":10}]}],
+    "PreCompact": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook","async":true,"timeout":10}]}],
+    "PostCompact": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook","async":true,"timeout":10}]}],
+    "Stop": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true,"timeout":10}]}],
+    "SessionEnd": [{"matcher":"*","hooks":[{"type":"command","command":"sessionsift hook","timeout":3}]}],
+    "Interrupt": [{"hooks":[{"type":"command","command":"sessionsift hook","async":true,"timeout":3}]}]
   }
 }
 Codex requires you to review and trust unmanaged hooks before they run.`
@@ -866,8 +883,12 @@ var signalPID = func(pid int) error {
 	return process.Signal(os.Interrupt)
 }
 var getHealth = func() (*http.Response, error) {
-	client := http.Client{Timeout: 500 * time.Millisecond}
+	client := http.Client{Timeout: 3 * time.Second}
 	return client.Get("http://" + localAddress(listenAddress()) + "/readyz")
+}
+var getCollectorHealth = func() (*http.Response, error) {
+	client := http.Client{Timeout: 2 * time.Second}
+	return client.Get("http://" + localAddress(listenAddress()) + "/healthz")
 }
 
 func write(out, errOut io.Writer, value any) int {

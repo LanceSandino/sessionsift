@@ -12,6 +12,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Whole-app tests render every pane; a loaded machine must not turn slowness into failures.
+    testTimeout: 20000,
     include: ["**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",

@@ -44,6 +44,40 @@ func TestSessionAndCompareRoutes(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsReportsObservedCaptureActivity(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC()
+	for _, event := range []domain.Event{
+		{ID: "hook-status", SessionID: "s1", Timestamp: now.Add(-time.Minute), EventType: "hook", Source: "hook"},
+		{ID: "otel-status", SessionID: "s1", Timestamp: now, EventType: "otel", Source: "otel"},
+		{ID: "claude-status", SessionID: "c1", Timestamp: now, EventType: "hook", Source: "claude_hook"},
+	} {
+		if err := store.AppendHookEvent(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := httptest.NewRecorder()
+	Handler(store).ServeHTTP(response, localRequest(http.MethodGet, "/api/v1/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var report struct {
+		CollectorRunning bool       `json:"collector_running"`
+		OTelEvents       int        `json:"otel_events"`
+		LatestOTel       *time.Time `json:"latest_otel_event_at"`
+		HookEvents       int        `json:"hook_events"`
+		ClaudeHookEvents int        `json:"claude_hook_events"`
+		ClaudeHookActive bool       `json:"claude_hook_active"`
+		MetricsReceiver  string     `json:"metrics_receiver"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.CollectorRunning || report.OTelEvents != 1 || report.LatestOTel == nil || report.HookEvents != 1 || report.ClaudeHookEvents != 1 || !report.ClaudeHookActive || report.MetricsReceiver != "acknowledge_only" {
+		t.Fatalf("report=%+v", report)
+	}
+}
+
 func TestHostedInvitationOwnerRoutes(t *testing.T) {
 	state := t.TempDir()
 	bridgeStore, err := bridge.Open(filepath.Join(state, "bridge.db"))
@@ -163,7 +197,7 @@ func TestHostedInvitationOwnerRoutes(t *testing.T) {
 func TestSessionListHidesInternalReviewsByDefault(t *testing.T) {
 	store := testStore(t)
 	now := time.Now().UTC()
-	review := domain.Session{ID: "review", ExternalSessionID: "review", Title: "Auto-review approval assessment", Kind: domain.InternalReviewSession, StartedAt: now, EndedAt: now, ParserVersion: domain.ParserVersion}
+	review := domain.Session{ID: "review", ExternalSessionID: "review", Title: "Auto-review approval assessment", Kind: domain.InternalReviewSession, StartedAt: now, EndedAt: now, ParserVersion: domain.ParserVersion, Turns: []domain.Turn{{ID: "review-turn", SessionID: "review", Sequence: 1, StartedAt: now}}}
 	if err := store.SaveImport(context.Background(), "review-path", "fingerprint", review); err != nil {
 		t.Fatal(err)
 	}

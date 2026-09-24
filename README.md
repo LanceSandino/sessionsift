@@ -11,6 +11,46 @@ The trusted Go process is the Local Agent product boundary. React, CLI, and
 future MCP clients consume the same allowlisted, versioned Session Protocol;
 provider parsers and SQLite are not client-facing interfaces.
 
+## Screenshots
+
+![The Conversation lens: a prompt and a steering message, a tool run whose failed race test is selected, and the inspector showing that call's redacted arguments and result](docs/screenshots/01-workspace-conversation.webp)
+
+One session in the **Conversation** lens. Each prompt's tool calls fold into a
+run; a failure later followed by a success is labelled, and the inspector shows
+the selected call's redacted evidence. All screenshots use synthetic demo data.
+
+<details>
+<summary>More screenshots: timeline, tools, review, sharing, pages, dark theme and phone</summary>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/03-timeline.webp" alt="Timeline lens with prompt checkpoints and their tool calls"><br><b>Timeline</b>: each prompt's checkpoint with up to eight entries; failures are always kept.</td>
+<td width="50%"><img src="docs/screenshots/04-tools.webp" alt="Tools lens with grouped tools and every call"><br><b>Tools</b>: tools grouped by name and transport, and every call.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/05-review.webp" alt="Review lens with decision history and owner notes"><br><b>Review</b>: decisions and notes stay on this device and never reach the agent.</td>
+<td><img src="docs/screenshots/02-workspace-dark.webp" alt="The workspace in the dark theme"><br><b>Dark theme</b>: follows the system unless you choose one.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/06-support-code.webp" alt="Support dialog showing a one-session support code with comment access"><br><b>Support code</b>: generated on this device for one session and one role.</td>
+<td><img src="docs/screenshots/13-helper-view.webp" alt="The shared session as the helper sees it on the bridge"><br><b>Helper view</b>: what the supporter sees on the bridge, limited by the grant.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/07-connections.webp" alt="Connections page with access-method guidance and bridge status"><br><b>Connections</b>: which access method to use, the bridge, MCP identities and pairing.</td>
+<td><img src="docs/screenshots/08-diagnostics.webp" alt="Diagnostics page with live capture and discovered data"><br><b>Diagnostics</b>: whether capture is arriving and what the agent found.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/09-analytics.webp" alt="Analytics page with aggregate totals and breakdowns"><br><b>Analytics</b>: aggregates only, no conversation text.</td>
+<td><img src="docs/screenshots/10-command-palette.webp" alt="Command palette listing sessions, views and actions"><br><b>Command palette</b>: <code>Ctrl/Cmd K</code> for sessions, lenses and actions.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/11-phone.webp" alt="The conversation on a phone" width="260"><br><b>Phone</b>: the same conversation at 390px.</td>
+<td><img src="docs/screenshots/12-phone-library.webp" alt="The session library drawer on a phone" width="260"><br><b>Phone library</b>: pages and sessions in one drawer.</td>
+</tr>
+</table>
+
+</details>
+
 ## Quick start
 
 Requirements: Go 1.27+ and Node.js 22+.
@@ -135,8 +175,8 @@ Connections work like remote-support tools: **the machine with the sessions
 generates the code, and the other person types it in.**
 
 1. Connect this device once: `sessionsift agent connect https://YOUR-BRIDGE` (or
-   **Remote access → Connect this device**). No account is needed.
-2. Open a conversation and choose **Generate support code** (or
+   **Connections → Connect this device**). No account is needed.
+2. Open a conversation, choose **Support** in the top bar, then **Generate support code** (or
    `sessionsift support start <session-id>`). You get a code like
    `7Q4M-2KXH-9TRD` that expires in ten minutes and works once.
 3. Your supporter signs in at `https://YOUR-BRIDGE/support`, enters the code, and
@@ -160,9 +200,15 @@ bridge persists its queue and registry in a private SQLite database.
 
 The public `/mcp` path uses the official MCP SDK, current protocol negotiation,
 Cloudflare Access signed identity, and a separate locally approved email grant
-for ChatGPT and Claude custom connectors. Google can
-remain the upstream Access login provider while Cloudflare Managed OAuth
-supplies OAuth discovery, registration, consent, and refresh tokens. See the
+for OAuth-capable MCP clients such as ChatGPT and Claude. Google can remain the
+upstream Access login provider while Cloudflare Managed OAuth supplies OAuth
+discovery, dynamic client registration, consent, token issuance, and refresh
+tokens. Dynamic client registration happens at Cloudflare's authorization
+server, not inside SessionSift; SessionSift acts as the protected MCP resource
+and verifies the resulting Cloudflare Access identity before applying its own
+local email grant. Each client callback URI must be allowed in the Cloudflare
+Managed OAuth application (for example, ChatGPT's connector callbacks and
+Claude's `https://claude.ai/api/mcp/auth_callback`). See the
 [deployment guide](docs/deployment.md) for the required routes and settings.
 
 ChatGPT transcript import remains fully supported through user-provided exports
@@ -197,9 +243,21 @@ the source supports it. Later user messages observed in the same turn appear as
 `STEER / QUEUE`; the available local records do not reliably distinguish those
 two delivery modes, so SessionSift does not guess.
 
-Conversation, Compare, Analytics, and Diagnostics screens use History API
-navigation and deep links such as `/sessions/<id>`, `/compare`, `/analytics`,
-and `/diagnostics` without page reloads. Browser back and forward navigation is
+The web UI is a conversation-first workspace. A narrow rail switches between
+Sessions, Analytics, Compare, Connections and Diagnostics; the session library
+lists every source, most recently updated first (or by creation, title or input
+tokens), with search and source filters. A session opens
+in four lenses — **Conversation**, **Timeline**, **Tools** and **Review** — beside
+an inspector whose **Context**, **Evidence** and **Notes** tabs follow whatever
+call, prompt, file or finding you select. Review notes and decisions are local
+annotations: they never modify the transcript and are never sent to the source
+agent. `Ctrl/Cmd K` opens a command palette, `Ctrl/Cmd Shift F` toggles focus
+mode, `/` searches the library, and the rail switches light and dark themes.
+
+Screens use History API navigation and deep links such as `/sessions/<id>`,
+`/sessions/<id>/timeline`, `/compare`, `/analytics`, `/connections`, and
+`/diagnostics` without page reloads; the earlier `/remote-access` and
+`/remote-review` links open Connections. Browser back and forward navigation is
 supported.
 
 The Analytics screen aggregates session, token, cache, tool, source, model,

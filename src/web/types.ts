@@ -27,3 +27,4 @@ export type AnalyticsTool={name:string;transport:string;server?:string;calls:num
 export type AnalyticsFinding={type:string;severity:string;confidence:string;count:number;sessions:number};
 export type AnalyticsRecommendation={id:string;title:string;summary:string;confidence:string;evidence:string[]};
 export type AnalyticsReport={summary:AnalyticsSummary;daily:AnalyticsDaily[];sources:AnalyticsBreakdown[];models:AnalyticsBreakdown[];repositories:AnalyticsBreakdown[];tools:AnalyticsTool[];findings:AnalyticsFinding[];recommendations:AnalyticsRecommendation[]};
+export type DiagnosticsStatus={collector_running:boolean;otel_active:boolean;otel_events:number;latest_otel_event_at?:string;hook_active:boolean;hook_events:number;latest_hook_event_at?:string;claude_hook_active?:boolean;claude_hook_events?:number;latest_claude_hook_event_at?:string;metrics_receiver:"acknowledge_only"};

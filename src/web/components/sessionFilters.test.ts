@@ -32,6 +32,12 @@ describe("filterSessions",()=>{
     expect(ids(filterSessions([codex,chat],{...baseFilters,source:"chatgpt"}))).toEqual(["chat"]);
   });
 
+  it("groups every exported chat product under the chat source",()=>{
+    const all=[session(),session({id:"gpt",source:"chatgpt"}),session({id:"claude",source:"claude"}),session({id:"code",source:"claude_code"})];
+    expect(ids(filterSessions(all,{...baseFilters,source:"chat"}))).toEqual(["gpt","claude"]);
+    expect(ids(filterSessions(all,{...baseFilters,source:"claude_code"}))).toEqual(["code"]);
+  });
+
   it("searches title and repository case-insensitively and trims input",()=>{
     const other=session({id:"other",title:"API review",repo_display_name:"backend"});
     expect(ids(filterSessions([session(),other],{...baseFilters,query:"  RESPONSIVE  "}))).toEqual(["session-1"]);

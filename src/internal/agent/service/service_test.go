@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LanceSandino/sessionsift/src/internal/analytics"
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
@@ -70,7 +71,7 @@ func TestExecuteRejectsUnknownDeniedAndInvalidRequests(t *testing.T) {
 func TestExecuteBoundsTimelineAndFiltersInternalReviews(t *testing.T) {
 	store := serviceStore(t)
 	now := time.Now().UTC()
-	internal := domain.Session{ID: "review", ExternalSessionID: "review", Title: "Review", Kind: domain.InternalReviewSession, Source: domain.SourceCodex, StartedAt: now, EndedAt: now, Status: "completed", ParserVersion: domain.ParserVersion}
+	internal := domain.Session{ID: "review", ExternalSessionID: "review", Title: "Review", Kind: domain.InternalReviewSession, Source: domain.SourceCodex, StartedAt: now, EndedAt: now, Status: "completed", ParserVersion: domain.ParserVersion, Turns: []domain.Turn{{ID: "review-turn", SessionID: "review", Sequence: 1, StartedAt: now}}}
 	if err := store.SaveImport(context.Background(), "review-path", "review-fingerprint", internal); err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +92,37 @@ func TestExecuteBoundsTimelineAndFiltersInternalReviews(t *testing.T) {
 	data := timeline.Data.(SessionTimelineResponse)
 	if !data.Truncated || len(data.Events)+len(data.ToolCalls) != 1 {
 		t.Fatalf("timeline=%+v", data)
+	}
+}
+
+func TestExecuteOmitsSessionsWithoutConversationEvidenceFromListsAndAnalytics(t *testing.T) {
+	store := serviceStore(t)
+	now := time.Now().UTC()
+	emptyReview := domain.Session{ID: "empty-review", ExternalSessionID: "empty-review", Title: "Auto-review approval assessment", Kind: domain.InternalReviewSession, Source: domain.SourceCodex, StartedAt: now, EndedAt: now, Status: "completed", ParserVersion: domain.ParserVersion}
+	if err := store.SaveImport(context.Background(), "empty-review-path", "empty-review-fingerprint", emptyReview); err != nil {
+		t.Fatal(err)
+	}
+	placeholder := domain.Event{ID: "startup", SessionID: "telemetry-only", Timestamp: now, EventType: "otel", EventSubtype: "codex.startup_phase", Source: "otel"}
+	if err := store.AppendHookEvent(context.Background(), placeholder); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := NewLocal(store)
+	list := agent.Execute(context.Background(), request(t, "without-empty", protocol.SessionList, ListArguments{IncludeInternal: true}))
+	items := list.Data.(SessionListResponse)
+	if len(items.Sessions) != 2 || items.Total != 2 {
+		t.Fatalf("empty shells leaked into list: %+v", items)
+	}
+	reportResponse := agent.Execute(context.Background(), request(t, "analytics-without-empty", protocol.AnalysisPatterns, nil))
+	report := reportResponse.Data.(analytics.Report)
+	if report.Summary.Sessions != 2 {
+		t.Fatalf("empty shells inflated analytics: %+v", report.Summary)
+	}
+	if _, err := store.GetSession(context.Background(), emptyReview.ID); err != nil {
+		t.Fatalf("empty audit record should remain retrievable: %v", err)
+	}
+	if _, err := store.GetSession(context.Background(), placeholder.SessionID); err != nil {
+		t.Fatalf("telemetry placeholder should remain retrievable: %v", err)
 	}
 }
 
@@ -185,4 +217,24 @@ func serviceStore(t *testing.T) *storage.Store {
 		}
 	}
 	return store
+}
+
+// Regression anchor for CU-20260924-005: Codex turn IDs became session-scoped,
+// so turn.get still resolves the raw provider ID a client may already hold.
+func TestTurnGetResolvesScopedAndProviderTurnIDs(t *testing.T) {
+	store := serviceStore(t)
+	now := time.Now().UTC()
+	session := domain.Session{ID: "s9", ExternalSessionID: "s9", Title: "s9", Kind: domain.DeveloperSession, Source: domain.SourceCodex, StartedAt: now, EndedAt: now,
+		Turns: []domain.Turn{{ID: "s9:t1", SessionID: "s9", ExternalTurnID: "t1", Sequence: 1, StartedAt: now}}}
+	if err := store.SaveImport(context.Background(), "path-s9", "fingerprint-s9", session); err != nil {
+		t.Fatal(err)
+	}
+	agent := NewLocal(store)
+	for index, id := range []string{"s9:t1", "t1"} {
+		response := agent.Execute(context.Background(), request(t, "turn_"+string(rune('a'+index)), protocol.TurnGet, TurnArguments{SessionID: "s9", TurnID: id}))
+		turn, ok := response.Data.(domain.Turn)
+		if response.Status != protocol.StatusOK || !ok || turn.ID != "s9:t1" {
+			t.Fatalf("turn %q: response=%+v", id, response)
+		}
+	}
 }

@@ -7,10 +7,14 @@
   "coverageAnalysis": "off",
   "mutate": [
     "src/web/components/sessionFilters.ts",
+    "src/web/components/sessionSort.ts",
     "src/web/components/timelineWindow.ts",
     "src/web/components/timelineJourney.ts",
     "src/web/sources.ts",
-    "src/web/supportState.ts"
+    "src/web/supportState.ts",
+    "src/web/sessionEvidence.ts",
+    "src/web/reviewState.ts",
+    "src/web/libraryGroups.ts"
   ],
   "ignorePatterns": [
     "/.cache",

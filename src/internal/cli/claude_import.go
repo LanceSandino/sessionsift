@@ -27,6 +27,7 @@ func importAndWatchClaude(ctx context.Context, store *storage.Store, home string
 		}
 	} else if result.Discovered > 0 {
 		fmt.Fprintf(out, "Imported %d of %d Claude Code transcripts (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
+		reportImportFailures(errOut, "Claude Code", result)
 	}
 	ticker := time.NewTicker(claudeWatchInterval)
 	defer ticker.Stop()
@@ -51,6 +52,7 @@ func importAndWatchExport(ctx context.Context, store *storage.Store, path, label
 		}
 	} else {
 		fmt.Fprintf(out, "Imported %d of %d %s conversations (%d unchanged).\n", result.Imported, result.Discovered, label, result.Skipped)
+		reportImportFailures(errOut, label, result)
 	}
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()

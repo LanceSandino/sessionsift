@@ -311,3 +311,38 @@ func TestParseSurvivesEmptyTranscript(t *testing.T) {
 		t.Fatalf("unexpected empty session: %+v", session)
 	}
 }
+
+// Regression anchor for CU-20260924-005: forked histories reuse turn_id values,
+// so a turn's identity is scoped to its session while the raw ID is kept.
+func TestParserScopesTurnIdentityToTheSession(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s3","cwd":"/tmp/repo"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-test"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Inspect"}]}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}}`,
+		`{"timestamp":"2026-01-01T00:00:04Z","type":"token_usage_record","payload":{"turn_id":"t1","usage":{"input_tokens":7}}}`,
+	}, "\n")
+	session, err := New().Parse(strings.NewReader(input), false)
+	if err != nil || len(session.Turns) != 1 || len(session.ToolCalls) != 1 || len(session.Events) == 0 {
+		t.Fatalf("session=%+v err=%v", session, err)
+	}
+	turn := session.Turns[0]
+	if turn.ID != "s3:t1" || turn.ExternalTurnID != "t1" || turn.InputTokens != 7 {
+		t.Fatalf("turn=%+v", turn)
+	}
+	if session.ToolCalls[0].TurnID != turn.ID {
+		t.Fatalf("tool call turn=%q", session.ToolCalls[0].TurnID)
+	}
+	for _, event := range session.Events {
+		if event.TurnID != turn.ID {
+			t.Fatalf("event %s turn=%q", event.ID, event.TurnID)
+		}
+	}
+
+	// Records before any turn stay unlinked rather than gaining a bare prefix.
+	orphan, err := New().Parse(strings.NewReader(`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s4"}}
+{"timestamp":"2026-01-01T00:00:01Z","type":"compacted","payload":{}}`), false)
+	if err != nil || len(orphan.Events) != 1 || orphan.Events[0].TurnID != "" {
+		t.Fatalf("orphan=%+v err=%v", orphan, err)
+	}
+}

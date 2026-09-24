@@ -25,6 +25,17 @@ type Store struct {
 	readDB   *sql.DB
 }
 
+// CaptureStats reports metadata-only ingestion activity for local diagnostics.
+type CaptureStats struct {
+	OTelEvents        int        `json:"otel_events"`
+	LatestOTelEventAt *time.Time `json:"latest_otel_event_at,omitempty"`
+	HookEvents        int        `json:"hook_events"`
+	LatestHookEventAt *time.Time `json:"latest_hook_event_at,omitempty"`
+	// Claude Code hooks are counted apart from Codex lifecycle hooks.
+	ClaudeHookEvents        int        `json:"claude_hook_events"`
+	LatestClaudeHookEventAt *time.Time `json:"latest_claude_hook_event_at,omitempty"`
+}
+
 // Open creates or migrates the database at path.
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -93,6 +104,38 @@ func (s *Store) Health(ctx context.Context) error {
 	return nil
 }
 
+// CaptureStats returns counts and latest timestamps without exposing event payloads.
+func (s *Store) CaptureStats(ctx context.Context) (CaptureStats, error) {
+	stats := CaptureStats{}
+	if err := captureSourceStats(ctx, s.reader(), "otel", &stats.OTelEvents, &stats.LatestOTelEventAt); err != nil {
+		return CaptureStats{}, err
+	}
+	// A hook replayed from the spool after the agent was down is still hook capture.
+	if err := captureSourceStats(ctx, s.reader(), "hook", &stats.HookEvents, &stats.LatestHookEventAt); err != nil {
+		return CaptureStats{}, err
+	}
+	if err := captureSourceStats(ctx, s.reader(), "claude_hook", &stats.ClaudeHookEvents, &stats.LatestClaudeHookEventAt); err != nil {
+		return CaptureStats{}, err
+	}
+	return stats, nil
+}
+
+func captureSourceStats(ctx context.Context, db *sql.DB, source string, count *int, latest **time.Time) error {
+	var raw string
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(timestamp), '') FROM events WHERE source IN (?, ?)`, source, source+"_spool").Scan(count, &raw); err != nil {
+		return err
+	}
+	if raw == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return fmt.Errorf("parse latest %s capture timestamp: %w", source, err)
+	}
+	*latest = &parsed
+	return nil
+}
+
 // Backup creates a transactionally consistent SQLite snapshot without
 // overwriting an existing file. The destination parent must already exist.
 func (s *Store) Backup(ctx context.Context, destination string) error {
@@ -124,7 +167,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	statements := []string{
 		`PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`,
 		`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, external_session_id TEXT NOT NULL, title TEXT NOT NULL, repo_root_hash TEXT, repo_display_name TEXT, model TEXT, started_at TEXT, ended_at TEXT, status TEXT, parser_version TEXT, archived INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS turns (` + turnColumns + `)`,
 		`CREATE TABLE IF NOT EXISTS events (id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, timestamp TEXT, event_type TEXT NOT NULL, source TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(session_id,id))`,
 		`CREATE TABLE IF NOT EXISTS tool_calls (id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, timestamp TEXT, tool_name TEXT, tool_category TEXT, success INTEGER, payload_json TEXT NOT NULL, PRIMARY KEY(session_id,id))`,
 		`CREATE TABLE IF NOT EXISTS findings (id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, finding_type TEXT, severity TEXT, confidence TEXT, payload_json TEXT NOT NULL, PRIMARY KEY(session_id,id))`,
@@ -140,7 +183,42 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration: %w", err)
 		}
 	}
+	if err := s.rekeyTurnsBySession(ctx); err != nil {
+		return fmt.Errorf("migration: %w", err)
+	}
 	return nil
+}
+
+// turnColumns keys turns by session, like events and tool calls: provider turn
+// IDs are only unique within one session.
+const turnColumns = `id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(session_id,id)`
+
+// rekeyTurnsBySession rebuilds a turns table created with the earlier
+// globally unique id key, keeping every row, in one transaction.
+func (s *Store) rekeyTurnsBySession(ctx context.Context) error {
+	var sessionKey int
+	if err := s.db.QueryRowContext(ctx, `SELECT pk FROM pragma_table_info('turns') WHERE name='session_id'`).Scan(&sessionKey); err != nil {
+		return err
+	}
+	if sessionKey != 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE turns_by_session (` + turnColumns + `)`,
+		`INSERT INTO turns_by_session(id,session_id,sequence,payload_json) SELECT id,session_id,sequence,payload_json FROM turns`,
+		`DROP TABLE turns`,
+		`ALTER TABLE turns_by_session RENAME TO turns`,
+	} {
+		if _, err = tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ReconcileChatGPTSource is retained for callers of the original ChatGPT-only name.

@@ -1,14 +1,24 @@
-/** @module UseLatestScroll @description Initializes a scroll viewport at its latest content without pinning later user navigation. */
+/** @module UseLatestScroll @description Opens a scroll viewport at its latest content, or where the reader left it, without pinning later user navigation. */
 import {useLayoutEffect,type RefObject} from "react";
 
-export function useLatestScroll(ref:RefObject<HTMLElement|null>,resetKey:string){
+export type ScrollOptions={
+  /** Remembered positions by reset key; a revisited view reopens where the reader left it. */
+  memory?:Map<string,number>;
+  /** Where a view the reader has not visited opens. */
+  start?:"latest"|"top";
+};
+
+export function useLatestScroll(ref:RefObject<HTMLElement|null>,resetKey:string,options:ScrollOptions={}){
+  const {memory,start="latest"}=options;
   useLayoutEffect(()=>{
     const viewport=ref.current;
     if(!viewport)return;
-    let pinned=true;
+    const saved=memory?.get(resetKey);
+    let pinned=saved===undefined&&start==="latest";
     let width=viewport.clientWidth,height=viewport.clientHeight;
-    viewport.scrollTop=viewport.scrollHeight;
+    viewport.scrollTop=saved!==undefined?saved:pinned?viewport.scrollHeight:0;
     const onScroll=()=>{
+      memory?.set(resetKey,viewport.scrollTop);
       // A breakpoint or hidden pane is not a user's decision to leave latest.
       if(viewport.clientWidth!==width||viewport.clientHeight!==height||!height)return;
       pinned=viewport.scrollHeight-viewport.clientHeight-viewport.scrollTop<4;
@@ -18,9 +28,10 @@ export function useLatestScroll(ref:RefObject<HTMLElement|null>,resetKey:string)
       if(pinned&&height)viewport.scrollTop=viewport.scrollHeight;
     });
     observer?.observe(viewport);
+    if(viewport.firstElementChild)observer?.observe(viewport.firstElementChild);
     viewport.addEventListener("scroll",onScroll,{passive:true});
     return()=>{observer?.disconnect();viewport.removeEventListener("scroll",onScroll)};
-  },[ref,resetKey]);
+  },[ref,resetKey,memory,start]);
 }
 
 export function scrollToCheckpoint(id:string,viewport?:HTMLElement|null){

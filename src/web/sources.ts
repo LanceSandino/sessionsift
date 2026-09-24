@@ -3,13 +3,13 @@ import type {Session} from "./types";
 
 export type SourceId="codex"|"claude_code"|"chatgpt"|"claude";
 
-export type SourceInfo={id:SourceId;label:string;icon:string;assistant:string;chat:boolean};
+export type SourceInfo={id:SourceId;label:string;icon:string;badge:string;tone:string;assistant:string;chat:boolean};
 
 export const sources:readonly SourceInfo[]=[
-  {id:"codex",label:"Codex",icon:"◈",assistant:"Codex",chat:false},
-  {id:"claude_code",label:"Claude Code",icon:"✳",assistant:"Claude",chat:false},
-  {id:"chatgpt",label:"ChatGPT",icon:"✦",assistant:"ChatGPT",chat:true},
-  {id:"claude",label:"Claude",icon:"✺",assistant:"Claude",chat:true},
+  {id:"codex",label:"Codex",icon:"◈",badge:"CX",tone:"cx",assistant:"Codex",chat:false},
+  {id:"claude_code",label:"Claude Code",icon:"✳",badge:"CC",tone:"cc",assistant:"Claude",chat:false},
+  {id:"chatgpt",label:"ChatGPT",icon:"✦",badge:"G",tone:"gpt",assistant:"ChatGPT",chat:true},
+  {id:"claude",label:"Claude",icon:"✺",badge:"Cl",tone:"cl",assistant:"Claude",chat:true},
 ];
 
 /** Sessions recorded before provider tagging are Codex transcripts. */

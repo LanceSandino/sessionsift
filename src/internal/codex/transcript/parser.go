@@ -106,14 +106,24 @@ func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) 
 		s.ExternalSessionID = fallbackID(s.StartedAt, lineNumber)
 	}
 	s.ID = s.ExternalSessionID
+	// Forked and copied histories reuse turn_id values, so a turn's identity is
+	// scoped to its session; ExternalTurnID keeps the raw provider value.
+	prefix := s.ID + ":"
 	for index := range s.Turns {
+		s.Turns[index].ID = prefix + s.Turns[index].ExternalTurnID
 		s.Turns[index].SessionID = s.ID
 	}
 	for index := range s.Events {
 		s.Events[index].SessionID = s.ID
+		if s.Events[index].TurnID != "" {
+			s.Events[index].TurnID = prefix + s.Events[index].TurnID
+		}
 	}
 	for index := range s.ToolCalls {
 		s.ToolCalls[index].SessionID = s.ID
+		if s.ToolCalls[index].TurnID != "" {
+			s.ToolCalls[index].TurnID = prefix + s.ToolCalls[index].TurnID
+		}
 	}
 	if s.Title == "" {
 		s.Title = "Untitled Codex session"

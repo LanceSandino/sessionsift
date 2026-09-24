@@ -1,0 +1,74 @@
+/** @module InspectorStyles @description The contextual inspector: session context, selected evidence and review notes beside the conversation. */
+.inspector{width:305px;flex-shrink:0;border-left:1px solid var(--line);background:var(--soft);display:flex;flex-direction:column;min-height:0;min-width:0;container:inspector/inline-size}
+.inspector-head{display:flex;justify-content:space-between;align-items:center;padding:15px 17px 7px}
+.inspector-head .eyebrow{font-size:9px}
+.inspector-head .icon-btn{width:23px;height:23px}
+.inspector-head .icon{width:14px;height:14px}
+.inspector-tabs{display:flex;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:5px;margin:0 17px 17px;padding:2px}
+.inspector-tabs button{flex:1;color:var(--muted);font-size:10px;padding:5px 2px;border-radius:3px;white-space:nowrap}
+.inspector-tabs button:hover{color:var(--ink)}
+.inspector-tabs button.active{background:var(--paper);color:var(--ink);box-shadow:0 1px 2px #0000000a}
+.inspector-content{overflow-y:auto;overscroll-behavior:contain;min-height:0;flex:1;padding:0 18px 18px}
+.inspector-section{padding:17px 0;border-top:1px solid var(--line)}
+.inspector-section:first-child{padding-top:0;border-top:0}
+.inspector-title{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:11px;font-size:10px;font-weight:600}
+.inspector-title .muted{font-size:9px;font-weight:400}
+.inspector-title.spaced{margin-top:14px}
+.inspector h3{font-size:13px;line-height:1.5;margin:7px 0;overflow-wrap:anywhere}
+.inspector h3.tool-title{font:600 16px var(--mono);margin-top:15px}
+.inspector .description{font-size:11px;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
+.inspector .small{font-size:10px}
+.inspector .text-button{font-size:10px}
+.journey{display:flex;flex-direction:column;margin-top:14px}
+.journey-step{position:relative;display:flex;gap:10px;padding:0 0 16px;text-align:left;width:100%}
+.journey-step:not(:last-child):before{content:"";position:absolute;left:7px;top:18px;bottom:3px;width:1px;background:var(--line)}
+.journey-step:last-child{padding-bottom:0}
+.journey-step .step-mark{width:15px;height:15px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;margin-top:1px;background:var(--paper);color:var(--accent);flex-shrink:0}
+.journey-step.has-failure .step-mark{color:var(--amber)}
+.step-mark svg{width:9px;height:9px}
+.journey-step strong{font-weight:550;font-size:10px;display:block}
+.journey-step small{font-size:9px;color:var(--muted);display:block;margin-top:2px}
+.journey-step:hover strong{color:var(--accent)}
+.stats-mini{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding-bottom:15px}
+.stats-mini strong{font-size:22px;letter-spacing:-1px;font-weight:550;display:block;line-height:1.3}
+.stats-mini strong.warn-text{color:var(--amber)}
+.stats-mini span{font-size:9px;color:var(--muted)}
+.stats-mini>div:not(:first-child){border-left:1px solid var(--line);padding-left:14px}
+.ratio-track{height:5px;background:var(--line);border-radius:2px;overflow:hidden;margin:8px 0}
+.ratio-fill{height:100%;background:var(--accent)}
+.ratio-caption{font-size:9px;color:var(--muted)}
+.file-row{display:flex;align-items:center;gap:8px;text-align:left;width:100%;padding:8px 0;min-width:0}
+.file-row>span{min-width:0}
+.file-row svg{width:14px;height:14px;color:var(--muted)}
+.file-row strong{font:10px var(--mono);font-weight:500;display:block;overflow-wrap:anywhere}
+.file-row small{font-size:9px;color:var(--muted)}
+.file-row>.icon:last-child{margin-left:auto;width:12px;height:12px}
+.file-row:hover strong{color:var(--accent)}
+.file-row.warn-row>svg:first-child{color:var(--amber)}
+.data-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:9px 0;font-size:10px}
+.data-row .key{color:var(--muted);flex-shrink:0}
+.data-row .value{text-align:right;min-width:0;overflow-wrap:anywhere}
+.inspector-content>.button{width:100%;margin-top:14px;font-size:11px}
+.inspector-footer{border-top:1px solid var(--line);padding:12px 17px;background:var(--soft)}
+.inspector-footer .button{width:100%;font-size:10px}
+.inspector-footer .button .push{margin-left:auto}
+.evidence-block{margin:10px 0}
+.evidence-block .richContent{font-size:11px}
+.evidence-empty{font-size:10px;color:var(--muted);font-style:italic;margin:6px 0}
+.turn-metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-top:10px}
+.turn-metrics div{min-width:0}
+.turn-metrics span{display:block;font-size:9px;color:var(--muted)}
+.turn-metrics b{font-size:12px;font-weight:550;overflow-wrap:anywhere}
+.note-list{display:grid;gap:9px}
+.note-card{padding:12px;border:1px solid var(--line);border-radius:5px;background:var(--paper)}
+.note-card .row{font-size:10px;flex-wrap:wrap;gap:6px}
+.note-card .avatar{width:22px;height:22px;font-size:8px}
+.note-card p{margin-top:7px;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+.note-card small{font-size:9px}
+.note-card .note-time{margin-left:auto}
+.evidence-banner{background:var(--amber-soft);color:var(--amber);padding:9px 10px;border-radius:4px;font-size:10px;line-height:1.6;margin:10px 0}
+.evidence-banner.neutral{background:var(--soft);color:var(--muted);border:1px solid var(--line)}
+.empty{padding:30px 10px;text-align:center;font-size:11px;color:var(--muted)}
+.empty .icon{width:25px;height:25px;margin-bottom:12px}
+/* The same inspector is 305px docked and full width on phones; its grids follow its own width. */
+@container inspector (min-width:360px){.turn-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.stats-mini strong{font-size:24px}}

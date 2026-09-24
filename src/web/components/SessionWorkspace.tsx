@@ -1,55 +1,96 @@
-/** @module SessionWorkspace @description Provides accessible tabs for the human-facing views of one session. */
-import React,{useEffect,useState} from "react";
-import type {Session,Turn} from "../types";
-import {ActivityMix} from "./ActivityMix";
-import {Collaboration} from "./Collaboration";
-import {Findings} from "./Findings";
-import {SessionContext} from "./SessionContext";
-import {SessionInvite} from "./SessionInvite";
-import {SupportShare} from "./SupportShare";
+/** @module SessionWorkspace @description Composes one session: header, view tabs, the active lens with its review composer, and the contextual inspector. */
+import React,{useCallback,useEffect,useMemo,useRef,useState} from "react";
+import type {SessionView} from "../navigation";
+import {currentDecision} from "../reviewState";
+import {sourceInfo} from "../sources";
+import type {Session} from "../types";
+import type {Collaboration} from "../useCollaboration";
+import {useLatestScroll} from "../useLatestScroll";
+import type {Evidence,InspectorTab,WorkspaceActions} from "../workspace";
+import {EvidenceInspector} from "./EvidenceInspector";
+import {Icon,type IconName} from "./Icon";
+import {ReviewComposer} from "./ReviewComposer";
+import {ReviewView} from "./ReviewView";
+import {SessionHeader} from "./SessionHeader";
+import {SourceView} from "./SourceView";
 import {Timeline} from "./Timeline";
-import {ToolUsage} from "./ToolUsage";
-import {Transcript} from "./Transcript";
+import {ToolsView} from "./ToolsView";
+import {Transcript,type JumpRequest} from "./Transcript";
 
-type SessionTab="conversation"|"timeline"|"tools"|"overview";
-const tabs:{id:SessionTab;label:string;icon:string}[]=[
-  {id:"conversation",label:"Conversation",icon:"◌"},
-  {id:"timeline",label:"Timeline",icon:"⌁"},
-  {id:"tools",label:"Tools & findings",icon:"◇"},
-  {id:"overview",label:"Overview",icon:"◎"},
+const views:{id:SessionView;label:string;icon:IconName}[]=[
+  {id:"conversation",label:"Conversation",icon:"chat"},
+  {id:"timeline",label:"Timeline",icon:"timeline"},
+  {id:"tools",label:"Tools",icon:"tool"},
+  {id:"review",label:"Review",icon:"note"},
 ];
 
-export const SessionWorkspace=React.memo(function SessionWorkspace({session,onTurn}:{session:Session;onTurn:(turn:Turn)=>void}){
-  const[active,setActive]=useState<SessionTab>("conversation");
-  const[expanded,setExpanded]=useState(false);
-  const[split,setSplit]=useState(()=>typeof window!=="undefined"&&window.innerWidth>=1180);
-  const metrics=session.metrics!;
-  const activeTab=tabs.find(tab=>tab.id===active)!;
-  useEffect(()=>{
-    if(!expanded)return;
-    const close=(event:KeyboardEvent)=>{if(event.key==="Escape")setExpanded(false)};
-    window.addEventListener("keydown",close);
-    return()=>window.removeEventListener("keydown",close);
-  },[expanded]);
-  const moveTab=(event:React.KeyboardEvent<HTMLButtonElement>,index:number)=>{
-    const direction=event.key==="ArrowRight"?1:event.key==="ArrowLeft"?-1:0;
-    if(!direction&&event.key!=="Home"&&event.key!=="End")return;
+type Props={
+  session:Session;
+  view:SessionView;
+  collaboration:Collaboration;
+  onView:(view:SessionView)=>void;
+  /** Called when evidence is selected so a hidden or overlay inspector can appear. */
+  onRevealInspector:()=>void;
+  /** Closes a narrow-screen overlay inspector; a docked inspector stays. */
+  onDismissOverlay:()=>void;
+  onCloseInspector:()=>void;
+  onCompare:()=>void;
+  onToast:(text:string)=>void;
+};
+
+export function SessionWorkspace({session,view,collaboration,onView,onRevealInspector,onDismissOverlay,onCloseInspector,onCompare,onToast}:Props){
+  const scroll=useRef<HTMLDivElement>(null);
+  const composer=useRef<HTMLTextAreaElement>(null);
+  const memory=useMemo(()=>new Map<string,number>(),[]);
+  const[source,setSource]=useState(false);
+  const[tab,setTab]=useState<InspectorTab>("context");
+  const[evidence,setEvidence]=useState<Evidence>();
+  const[jump,setJump]=useState<JumpRequest>();
+  const[openRuns,setOpenRuns]=useState<Record<string,boolean>>({});
+  const[draft,setDraft]=useState("");
+  const[target,setTarget]=useState("");
+  const pendingFocus=useRef(false);
+  useEffect(()=>{setSource(false);setTab("context");setEvidence(undefined);setJump(undefined);setOpenRuns({});setDraft("");setTarget("");memory.clear()},[session.id,memory]);
+  useLatestScroll(scroll,`${session.id}:${source?"source":view}`,{memory,start:source||view==="tools"||view==="review"?"top":"latest"});
+  useEffect(()=>{if(pendingFocus.current){pendingFocus.current=false;composer.current?.focus()}});
+  const actions:WorkspaceActions=useMemo(()=>({
+    selectEvidence:(next:Evidence)=>{setEvidence(next);setTab("evidence");onRevealInspector()},
+    jumpToTurn:(turnID:string)=>{setSource(false);onView("conversation");setJump({turnID,nonce:Date.now()})},
+    noteOn:(turnID?:string)=>{setTarget(turnID||"");setSource(false);if(view!=="conversation"&&view!=="review")onView("conversation");pendingFocus.current=true;onDismissOverlay()},
+    setView:(next:SessionView)=>{setSource(false);onView(next)},
+  }),[onRevealInspector,onDismissOverlay,onView,view]);
+  const addNote=useCallback(async(body:string,turnID?:string)=>{await collaboration.addNote(body,turnID);onToast("Review note added on this device. Nothing was sent to the source agent.")},[collaboration,onToast]);
+  const counts:Record<SessionView,number>={conversation:session.turns?.length||0,timeline:session.turns?.length||0,tools:session.tool_calls?.length||0,review:collaboration.annotations.length+collaboration.reviews.length};
+  const move=(event:React.KeyboardEvent<HTMLButtonElement>,index:number)=>{
+    const step=event.key==="ArrowRight"?1:event.key==="ArrowLeft"?-1:0;
+    if(!step&&event.key!=="Home"&&event.key!=="End")return;
     event.preventDefault();
-    const next=event.key==="Home"?0:event.key==="End"?tabs.length-1:(index+direction+tabs.length)%tabs.length;
-    setActive(tabs[next].id);
+    const next=event.key==="Home"?0:event.key==="End"?views.length-1:(index+step+views.length)%views.length;
+    actions.setView(views[next].id);
     event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
   };
-  const panel=(tab:SessionTab)=>tab==="conversation"?<Transcript session={session}/>:tab==="timeline"?<Timeline session={session} onTurn={onTurn} expanded={expanded}/>:tab==="tools"?<div className="sessionSplitPanel"><ToolUsage session={session}/><Findings findings={session.findings||[]}/></div>:<div className="overviewScroll scrollViewport" aria-label="Session overview entries"><div className="overviewGrid"><SessionContext session={session}/><ActivityMix explorationRatio={metrics.exploration_ratio}/><SupportShare key={`support-${session.id}`} sessionId={session.id} sessionTitle={session.title}/><SessionInvite key={session.id} session={session} sessionId={session.id} sessionTitle={session.title}/><Collaboration sessionId={session.id}/></div></div>;
-  const secondary=active==="conversation"?"timeline":active;
-  return <section className={`sessionWorkspace ${expanded?"expanded":""} ${split?"split":""}`} data-active={active} aria-label="Selected session workspace">
-    <header className="workspaceHeader">
-      <nav className="sessionTabs" role="tablist" aria-label="Session views">
-        {tabs.map((tab,index)=><button key={tab.id} id={`session-tab-${tab.id}`} role="tab" aria-selected={active===tab.id} aria-controls={`session-panel-${tab.id}`} tabIndex={active===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>moveTab(event,index)}><span aria-hidden="true">{tab.icon}</span>{tab.label}{tab.id==="conversation"&&<small>{metrics.turn_count}</small>}{tab.id==="timeline"&&<small>{metrics.turn_count}</small>}{tab.id==="tools"&&<small>{metrics.tool_calls+metrics.finding_count}</small>}</button>)}
-      </nav>
-      <div className="workspaceActions"><button className="workspaceModeButton" type="button" aria-label={split?"Use focused control center":"Use split control center"} aria-pressed={split} onClick={()=>setSplit(value=>!value)}><span aria-hidden="true">{split?"▣":"▥"}</span><b>{split?"Focus":"Split"}</b></button><button className="workspaceExpandButton" type="button" aria-label={expanded?`Exit expanded ${activeTab.label} view`:`Expand ${activeTab.label} view`} aria-pressed={expanded} onClick={()=>setExpanded(value=>!value)}><span aria-hidden="true">{expanded?"↙":"⛶"}</span><b>{expanded?"Restore":"Expand"}</b></button></div>
-    </header>
-    <div className="sessionTabPanel" id={`session-panel-${active}`} role="tabpanel" aria-labelledby={`session-tab-${active}`}>
-      {split?<div className="controlCenterGrid"><section className="controlCenterPane controlCenterPrimary" aria-label="Conversation control pane">{panel("conversation")}</section><section className="controlCenterPane controlCenterSecondary" aria-label={`${tabs.find(tab=>tab.id===secondary)!.label} control pane`}>{panel(secondary)}</section></div>:panel(active)}
+  const active=source?undefined:view;
+  const sourceLabel=sourceInfo(session).label;
+  return <>
+    <SessionHeader session={session} decision={currentDecision(collaboration.reviews)}/>
+    <div className="view-tabs">
+      <div className="view-tablist" role="tablist" aria-label="Session views">
+        {views.map((item,index)=><button type="button" key={item.id} id={`view-tab-${item.id}`} role="tab" aria-selected={active===item.id} aria-controls="session-panel" tabIndex={view===item.id?0:-1} className={`view-tab ${active===item.id?"active":""}`} onClick={()=>actions.setView(item.id)} onKeyDown={event=>move(event,index)}><Icon name={item.icon}/>{item.label}<span className="tab-count">{counts[item.id].toLocaleString()}</span></button>)}
+      </div>
+      <div className="view-controls"><button type="button" className={`icon-btn ${source?"on":""}`} aria-label={source?"Hide normalized record":"Show normalized record"} aria-pressed={source} title="Normalized record (JSON)" onClick={()=>setSource(value=>!value)}><Icon name="code"/></button></div>
     </div>
-  </section>;
-});
+    <div className="workbench">
+      <section className="main-pane" aria-label="Session content">
+        <div ref={scroll} className="main-scroll" id="session-panel" role="tabpanel" aria-labelledby={active?`view-tab-${active}`:undefined} aria-label={active?undefined:"Normalized record"} tabIndex={0}>
+          {source?<SourceView session={session}/>
+            :view==="conversation"?<Transcript session={session} annotations={collaboration.annotations} selected={evidence} viewport={scroll} jump={jump} openRuns={openRuns} onRunToggle={(turnID,open)=>setOpenRuns(value=>({...value,[turnID]:open}))} actions={actions}/>
+            :view==="timeline"?<Timeline session={session} selected={evidence} viewport={scroll} actions={actions}/>
+            :view==="tools"?<ToolsView session={session} selected={evidence} actions={actions}/>
+            :<ReviewView session={session} collaboration={collaboration} onToast={onToast}/>}
+        </div>
+        {!source&&(view==="conversation"||view==="review")&&<ReviewComposer turns={session.turns||[]} sourceLabel={sourceLabel} target={target} draft={draft} textarea={composer} onTarget={setTarget} onDraft={setDraft} onSubmit={addNote}/>}
+      </section>
+      <EvidenceInspector session={session} tab={tab} evidence={evidence} annotations={collaboration.annotations} actions={actions} onTab={setTab} onClose={onCloseInspector} onCompare={onCompare}/>
+    </div>
+  </>;
+}

@@ -32,12 +32,12 @@ describe("SupportShare",()=>{
     vi.stubGlobal("fetch",fetchMock);
     render(<SupportShare sessionId="s1" sessionTitle="Checkout bug"/>);
     expect(await screen.findByText("https://bridge.example/support")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Support access"),{target:{value:"comment"}});
+    fireEvent.click(screen.getByRole("radio",{name:/Comment/}));
     fireEvent.change(screen.getByLabelText("Support duration"),{target:{value:"240"}});
     fireEvent.click(screen.getByRole("button",{name:"Generate support code"}));
     expect(await screen.findByLabelText("Support code")).toHaveTextContent("ABCD-EFGH-JKMN");
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/remote/support",expect.objectContaining({method:"POST",body:JSON.stringify({session_id:"s1",role:"comment",minutes:240})}));
-    expect(screen.getByText(/Expires in 9:3\d/)).toBeInTheDocument();
+    expect(screen.getByText(/^9:[0-5]\d$/).parentElement).toHaveTextContent(/Expires in 9:[0-5]\d · single use/);
     expect(screen.getByText(/Waiting for your supporter/)).toBeInTheDocument();
 
     supports=[{...waiting,status:"connected",supporter:"helper@example.com",connected_at:new Date().toISOString(),expires_at:future(3600),last_activity_at:new Date().toISOString()}];
@@ -46,6 +46,18 @@ describe("SupportShare",()=>{
     fireEvent.click(screen.getByRole("button",{name:"Disconnect supporter"}));
     await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/v1/remote/support/end",expect.objectContaining({method:"POST"})));
     expect(await screen.findByRole("button",{name:"Generate support code"})).toBeInTheDocument();
+  });
+
+  it("keeps a code this page issued when the share dialog is closed and reopened",async()=>{
+    const waiting={id:"support_3",session_id:"s3",role:"view",operations:[],created_at:new Date().toISOString(),code_expires_at:future(500),access_minutes:60,failed_attempts:0,status:"waiting"};
+    let supports:unknown[]=[];
+    vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL,init?:RequestInit)=>{const path=String(input);if(path.endsWith("/bridge"))return json({connected:true,url:"https://bridge.example",device_id:"d"});if(path.endsWith("/support")&&init?.method==="POST"){supports=[waiting];return json({support:waiting,code:"WXYZ-2345-6789",connect_url:"https://bridge.example/support"},201)}return json(supports)}));
+    const {unmount}=render(<SupportShare sessionId="s3" sessionTitle="Reopened"/>);
+    fireEvent.click(await screen.findByRole("button",{name:"Generate support code"}));
+    expect(await screen.findByLabelText("Support code")).toHaveTextContent("WXYZ-2345-6789");
+    unmount();
+    render(<SupportShare sessionId="s3" sessionTitle="Reopened"/>);
+    expect(await screen.findByLabelText("Support code")).toHaveTextContent("WXYZ-2345-6789");
   });
 
   it("does not redisplay a code it did not create in this view and surfaces errors",async()=>{

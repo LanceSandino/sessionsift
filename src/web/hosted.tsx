@@ -14,7 +14,7 @@ function enhance(){
  for(const[element,root]of roots){if(!element.isConnected){root.unmount();roots.delete(element)}}
  document.querySelectorAll<HTMLElement>("[data-rich]:not([data-rich-ready])").forEach(element=>{
   const text=element.textContent||"";element.dataset.richReady="true";
-  const root=createRoot(element);roots.set(element,root);root.render(<RichContent text={text}/>);
+  const root=createRoot(element);roots.set(element,root);root.render(<RichContent text={text} preformatted={element.dataset.rich==="pre"}/>);
  });
  document.querySelectorAll<HTMLElement>("[data-card]:not([data-expand-ready]),main>.panel:not([data-expand-ready])").forEach(pane=>{
   pane.dataset.expandReady="true";const button=document.createElement("button");button.className="paneExpand";button.textContent="Expand pane";button.setAttribute("aria-expanded","false");

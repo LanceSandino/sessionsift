@@ -1,25 +1,49 @@
 /** @module TimelineJourney @description Condenses dense tool and event evidence into one human-readable checkpoint per prompt. */
 import type {Event,Session,ToolCall,Turn} from "../types";
 
-export type JourneyNote={id:string;kind:string;text:string;at:string};
-export type JourneyCheckpoint={id:string;sequence:number;startedAt:string;endedAt:string;prompt:string;turn:Turn;toolCount:number;mcpCount:number;failedCount:number;categories:Record<string,number>;notes:JourneyNote[]};
+export type JourneyNote={id:string;kind:string;text:string;at:string;compaction:boolean};
+export type JourneyCheckpoint={id:string;sequence:number;startedAt:string;endedAt:string;prompt:string;turn:Turn;toolCount:number;mcpCount:number;failedCount:number;categories:Record<string,number>;notes:JourneyNote[];calls:ToolCall[]};
+export type JourneyEntry={kind:"call";at:string;call:ToolCall}|{kind:"note";at:string;note:JourneyNote};
+export type JourneyFilter="all"|"failed";
 
 export function buildTimelineJourney(session:Session):JourneyCheckpoint[]{
-  const checkpoints:JourneyCheckpoint[]=(session.turns||[]).slice().sort((a,b)=>a.started_at.localeCompare(b.started_at)).map(turn=>({id:turn.id,sequence:turn.sequence,startedAt:turn.started_at,endedAt:turn.ended_at,prompt:turn.user_prompt_redacted||"Redacted prompt",turn,toolCount:0,mcpCount:0,failedCount:0,categories:{},notes:[]}));
+  const checkpoints:JourneyCheckpoint[]=(session.turns||[]).slice().sort((a,b)=>a.started_at.localeCompare(b.started_at)).map(turn=>({id:turn.id,sequence:turn.sequence,startedAt:turn.started_at,endedAt:turn.ended_at,prompt:turn.user_prompt_redacted||"Redacted prompt",turn,toolCount:0,mcpCount:0,failedCount:0,categories:{},notes:[],calls:[]}));
   const byTurn=new Map<string|undefined,JourneyCheckpoint>(checkpoints.map(checkpoint=>[checkpoint.id,checkpoint]));
   if(session.tool_calls)for(const call of session.tool_calls)addTool(byTurn.get(call.turn_id)||nearestCheckpoint(checkpoints,call.timestamp),call);
   if(session.events)for(const event of session.events){
     if(event.event_type==="prompt"||event.event_type==="tool")continue;
     const checkpoint=byTurn.get(event.turn_id)||nearestCheckpoint(checkpoints,event.timestamp);
-    if(checkpoint)checkpoint.notes.push({id:event.id,kind:event.event_subtype==="steering_or_queued"?"STEER / QUEUE":(event.event_subtype||event.event_type).toUpperCase(),text:eventText(event),at:event.timestamp});
+    if(checkpoint)checkpoint.notes.push({id:event.id,kind:event.event_subtype==="steering_or_queued"?"STEER / QUEUE":(event.event_subtype||event.event_type).toUpperCase(),text:eventText(event),at:event.timestamp,compaction:event.event_type==="compaction"});
   }
-  for(const checkpoint of checkpoints)checkpoint.notes.sort((a,b)=>a.at.localeCompare(b.at));
+  for(const checkpoint of checkpoints){
+    checkpoint.notes.sort((a,b)=>a.at.localeCompare(b.at));
+    checkpoint.calls.sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
+  }
   return checkpoints;
+}
+
+/**
+ * The rows one checkpoint shows. Failed calls are never hidden and recorded
+ * events outrank routine calls; the rest are the latest calls up to the cap.
+ */
+export function journeyEntries(checkpoint:JourneyCheckpoint,filter:JourneyFilter,cap:number):{shown:JourneyEntry[];hidden:number}{
+  const calls=checkpoint.calls.map(call=>({kind:"call" as const,at:call.timestamp,call}));
+  const notes=checkpoint.notes.map(note=>({kind:"note" as const,at:note.at,note}));
+  const failed=calls.filter(entry=>!entry.call.success);
+  if(filter==="failed")return {shown:failed,hidden:0};
+  const total=calls.length+notes.length;
+  const routine=calls.filter(entry=>entry.call.success);
+  const room=Math.max(0,cap-failed.length);
+  const keptNotes=room>0?notes.slice(-room):[];
+  const keptRoutine=routine.slice(Math.max(0,routine.length-(room-keptNotes.length)));
+  const shown:JourneyEntry[]=[...failed,...keptNotes,...keptRoutine].sort((a,b)=>a.at.localeCompare(b.at));
+  return {shown,hidden:total-shown.length};
 }
 
 function addTool(checkpoint:JourneyCheckpoint|undefined,call:ToolCall){
   if(!checkpoint)return;
   checkpoint.toolCount++;
+  checkpoint.calls.push(call);
   if(call.tool_transport==="mcp")checkpoint.mcpCount++;
   if(!call.success)checkpoint.failedCount++;
   const category=call.tool_category||"other";

@@ -549,6 +549,31 @@ func (s *Store) AcceptInvitation(code, principal string) (Invitation, string, er
 	return invitation, token, nil
 }
 
+// InvitationForAcceptance validates an invitation link without consuming its
+// single-use secret. GET requests use this to present an explicit confirmation
+// step so link previews and prefetchers cannot accept an invitation.
+func (s *Store) InvitationForAcceptance(code, principal string) (Invitation, error) {
+	principal, err := normalizeEmail(principal)
+	if err != nil {
+		return Invitation{}, err
+	}
+	invitation, _, err := scanInvitation(s.db.QueryRow(`SELECT id,workspace_id,device_id,owner,invitee,session_id,role,operations_json,created_at,expires_at,accepted_at,revoked_at,last_viewed_at,code_hash
+		FROM invitations WHERE code_hash=?`, hashCode(code)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Invitation{}, errors.New("invalid invitation")
+	}
+	if err != nil {
+		return Invitation{}, err
+	}
+	if invitation.Invitee != principal {
+		return Invitation{}, errors.New("invitation is assigned to another identity")
+	}
+	if invitation.RevokedAt != nil || !time.Now().Before(invitation.ExpiresAt) {
+		return Invitation{}, errors.New("invitation is expired or revoked")
+	}
+	return invitation, nil
+}
+
 func (s *Store) InvitationsForDevice(deviceID string) ([]Invitation, error) {
 	rows, err := s.db.Query(`SELECT id,workspace_id,device_id,owner,invitee,session_id,role,operations_json,created_at,expires_at,accepted_at,revoked_at,last_viewed_at,''
 		FROM invitations WHERE device_id=? ORDER BY created_at DESC`, deviceID)

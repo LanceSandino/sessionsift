@@ -68,6 +68,8 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 			compare(agent, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/analytics":
 			analyticsReport(agent, w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/diagnostics":
+			diagnosticsReport(store, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/protocol":
 			receiveProtocol(agent, w, r)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/internal/hooks/"):
@@ -96,6 +98,30 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
 	}))
+}
+
+type diagnosticsResponse struct {
+	storage.CaptureStats
+	CollectorRunning bool   `json:"collector_running"`
+	OTelActive       bool   `json:"otel_active"`
+	HookActive       bool   `json:"hook_active"`
+	ClaudeHookActive bool   `json:"claude_hook_active"`
+	MetricsReceiver  string `json:"metrics_receiver"`
+}
+
+func diagnosticsReport(store *storage.Store, w http.ResponseWriter, r *http.Request) {
+	stats, err := store.CaptureStats(r.Context())
+	if err != nil {
+		apiError(w, err)
+		return
+	}
+	cutoff := time.Now().UTC().Add(-15 * time.Minute)
+	writeJSON(w, http.StatusOK, diagnosticsResponse{
+		CaptureStats: stats, CollectorRunning: true, MetricsReceiver: "acknowledge_only",
+		OTelActive:       stats.LatestOTelEventAt != nil && stats.LatestOTelEventAt.After(cutoff),
+		HookActive:       stats.LatestHookEventAt != nil && stats.LatestHookEventAt.After(cutoff),
+		ClaudeHookActive: stats.LatestClaudeHookEventAt != nil && stats.LatestClaudeHookEventAt.After(cutoff),
+	})
 }
 
 func analyticsReport(agent *service.Service, w http.ResponseWriter, r *http.Request) {

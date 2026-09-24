@@ -60,7 +60,10 @@ func ImportClaude(ctx context.Context, store *storage.Store, claudeHome string) 
 		session.Findings = findings
 		scrubWorkspace(&session)
 		if err := store.SaveImport(ctx, pathHash, fingerprint, session); err != nil {
-			return result, err
+			// As for Codex: report it, retry next pass, keep importing the rest.
+			result.Failed++
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %v", redact.DisplayPath(source.Path), err))
+			continue
 		}
 		result.Imported++
 	}

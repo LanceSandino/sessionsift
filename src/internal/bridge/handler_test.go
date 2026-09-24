@@ -362,8 +362,33 @@ func TestInvitationAcceptanceSetsSecureSessionAndServesOnlyInvitee(t *testing.T)
 		return accessauth.Principal{}, context.Canceled
 	})
 	handler := NewHandler(store, verifier, "https://sessionsift.example")
-	acceptRequest := httptest.NewRequest(http.MethodGet, "/invite/accept/"+code, nil)
+	landingRequest := httptest.NewRequest(http.MethodGet, "/invite/accept/"+code, nil)
+	landingRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
+	landing := httptest.NewRecorder()
+	handler.ServeHTTP(landing, landingRequest)
+	if landing.Code != http.StatusOK || !strings.Contains(landing.Body.String(), "Open shared session") || len(landing.Result().Cookies()) != 0 {
+		t.Fatalf("landing=%d headers=%v body=%s", landing.Code, landing.Header(), landing.Body.String())
+	}
+	listed, err := store.InvitationsForDevice(device.ID)
+	if err != nil || len(listed) != 1 || listed[0].AcceptedAt != nil {
+		t.Fatalf("GET consumed invitation: invitations=%+v err=%v", listed, err)
+	}
+	crossSiteRequest := httptest.NewRequest(http.MethodPost, "/invite/accept/"+code, nil)
+	crossSiteRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
+	crossSiteRequest.Header.Set("Origin", "https://attacker.example")
+	crossSite := httptest.NewRecorder()
+	handler.ServeHTTP(crossSite, crossSiteRequest)
+	if crossSite.Code != http.StatusForbidden {
+		t.Fatalf("cross-site acceptance=%d body=%s", crossSite.Code, crossSite.Body.String())
+	}
+	listed, err = store.InvitationsForDevice(device.ID)
+	if err != nil || listed[0].AcceptedAt != nil {
+		t.Fatalf("cross-site POST consumed invitation: invitations=%+v err=%v", listed, err)
+	}
+
+	acceptRequest := httptest.NewRequest(http.MethodPost, "/invite/accept/"+code, nil)
 	acceptRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
+	acceptRequest.Header.Set("Origin", "https://sessionsift.example")
 	accepted := httptest.NewRecorder()
 	handler.ServeHTTP(accepted, acceptRequest)
 	if accepted.Code != http.StatusSeeOther || accepted.Header().Get("Location") != "/invite/"+invitation.ID {
@@ -372,6 +397,21 @@ func TestInvitationAcceptanceSetsSecureSessionAndServesOnlyInvitee(t *testing.T)
 	cookies := accepted.Result().Cookies()
 	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookies=%+v", cookies)
+	}
+	retryRequest := httptest.NewRequest(http.MethodGet, "/invite/accept/"+code, nil)
+	retryRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
+	retryRequest.AddCookie(cookies[0])
+	retry := httptest.NewRecorder()
+	handler.ServeHTTP(retry, retryRequest)
+	if retry.Code != http.StatusSeeOther || retry.Header().Get("Location") != "/invite/"+invitation.ID {
+		t.Fatalf("accepted retry=%d headers=%v body=%s", retry.Code, retry.Header(), retry.Body.String())
+	}
+	replayRequest := httptest.NewRequest(http.MethodGet, "/invite/accept/"+code, nil)
+	replayRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
+	replay := httptest.NewRecorder()
+	handler.ServeHTTP(replay, replayRequest)
+	if replay.Code != http.StatusConflict || !strings.Contains(replay.Body.String(), "browser where it was accepted") {
+		t.Fatalf("accepted replay=%d body=%s", replay.Code, replay.Body.String())
 	}
 	pageRequest := httptest.NewRequest(http.MethodGet, "/invite/"+invitation.ID, nil)
 	pageRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
@@ -427,8 +467,16 @@ func TestInvitationAgentLifecycleAndSessionProtocol(t *testing.T) {
 	}
 
 	code := envelope.AcceptURL[strings.LastIndex(envelope.AcceptURL, "/")+1:]
-	acceptRequest := httptest.NewRequest(http.MethodGet, "/invite/accept/"+code, nil)
+	landingRequest := httptest.NewRequest(http.MethodGet, "/invite/accept/"+code, nil)
+	landingRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
+	landing := httptest.NewRecorder()
+	handler.ServeHTTP(landing, landingRequest)
+	if landing.Code != http.StatusOK {
+		t.Fatalf("landing=%d body=%s", landing.Code, landing.Body.String())
+	}
+	acceptRequest := httptest.NewRequest(http.MethodPost, "/invite/accept/"+code, nil)
 	acceptRequest.Header.Set("Cf-Access-Jwt-Assertion", "reviewer")
+	acceptRequest.Header.Set("Origin", "https://sessionsift.example")
 	accepted := httptest.NewRecorder()
 	handler.ServeHTTP(accepted, acceptRequest)
 	cookies := accepted.Result().Cookies()

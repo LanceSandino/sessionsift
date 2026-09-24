@@ -229,7 +229,7 @@ func (s *Service) analytics(ctx context.Context) (analytics.Report, error) {
 	if err != nil {
 		return analytics.Report{}, err
 	}
-	return analytics.Build(sessions), nil
+	return analytics.Build(conversationSessions(sessions)), nil
 }
 
 func (s *Service) list(ctx context.Context, arguments ListArguments) (any, protocol.Status, error) {
@@ -238,7 +238,7 @@ func (s *Service) list(ctx context.Context, arguments ListArguments) (any, proto
 		return nil, protocol.StatusError, err
 	}
 	items := make([]SessionSummary, 0, len(sessions))
-	for _, session := range sessions {
+	for _, session := range conversationSessions(sessions) {
 		if session.Kind == domain.InternalReviewSession && !arguments.IncludeInternal {
 			continue
 		}
@@ -267,6 +267,21 @@ func (s *Service) list(ctx context.Context, arguments ListArguments) (any, proto
 		response.NextCursor = &next
 	}
 	return response, protocol.StatusOK, nil
+}
+
+// conversationSessions keeps ingestion placeholders available for reconciliation and
+// direct audit lookup without presenting evidence-free records as conversations.
+func conversationSessions(sessions []domain.Session) []domain.Session {
+	visible := make([]domain.Session, 0, len(sessions))
+	for _, session := range sessions {
+		empty := len(session.Turns) == 0 && len(session.ToolCalls) == 0
+		placeholder := session.Title == "Live Codex session" || (session.Source == domain.SourceCodex && session.Status == "live")
+		if empty && (session.Kind == domain.InternalReviewSession || placeholder) {
+			continue
+		}
+		visible = append(visible, session)
+	}
+	return visible
 }
 
 func (s *Service) session(ctx context.Context, id string) (domain.Session, protocol.Status, error) {
@@ -311,8 +326,10 @@ func (s *Service) turn(ctx context.Context, arguments TurnArguments) (any, proto
 	if err != nil {
 		return nil, status, err
 	}
+	// Turn IDs are session-scoped; the raw provider ID a client may already
+	// hold still resolves within this one session.
 	for _, turn := range session.Turns {
-		if turn.ID == arguments.TurnID {
+		if turn.ID == arguments.TurnID || (turn.ExternalTurnID != "" && turn.ExternalTurnID == arguments.TurnID) {
 			return turn, protocol.StatusOK, nil
 		}
 	}

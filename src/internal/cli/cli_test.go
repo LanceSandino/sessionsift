@@ -19,6 +19,7 @@ import (
 
 	bridgeapp "github.com/LanceSandino/sessionsift/src/internal/bridge"
 	"github.com/LanceSandino/sessionsift/src/internal/config"
+	"github.com/LanceSandino/sessionsift/src/internal/ingest"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
@@ -50,6 +51,31 @@ func TestVersionSetupAndUsage(t *testing.T) {
 	if start < 0 || end < start || !json.Valid([]byte(snippet[start:end+1])) {
 		t.Fatalf("hook setup did not contain valid JSON: %s", snippet)
 	}
+	var hookConfig struct {
+		Hooks map[string][]struct {
+			Hooks []map[string]any `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(snippet[start:end+1]), &hookConfig); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "PreCompact", "PostCompact", "Stop"} {
+		handler := hookConfig.Hooks[event][0].Hooks[0]
+		if handler["timeout"] != float64(10) || handler["async"] != true {
+			t.Fatalf("%s policy=%v", event, handler)
+		}
+	}
+	sessionEnd := hookConfig.Hooks["SessionEnd"][0].Hooks[0]
+	if sessionEnd["timeout"] != float64(3) {
+		t.Fatalf("SessionEnd timeout=%v", sessionEnd["timeout"])
+	}
+	if _, exists := sessionEnd["async"]; exists {
+		t.Fatalf("SessionEnd must be synchronous: %v", sessionEnd)
+	}
+	interrupt := hookConfig.Hooks["Interrupt"][0].Hooks[0]
+	if interrupt["timeout"] != float64(3) || interrupt["async"] != true {
+		t.Fatalf("Interrupt policy=%v", interrupt)
+	}
 	if code := Run(context.Background(), nil, strings.NewReader(""), &out, &errOut); code != 2 {
 		t.Fatalf("usage code=%d", code)
 	}
@@ -73,8 +99,16 @@ func TestSetupEnableInstallsCurrentBinary(t *testing.T) {
 		t.Fatalf("second code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 	out.Reset()
+	oldCollectorHealth := getCollectorHealth
+	getCollectorHealth = func() (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"status":"ok"}`))}, nil
+	}
+	t.Cleanup(func() { getCollectorHealth = oldCollectorHealth })
 	if code := Run(context.Background(), []string{"doctor"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "OTel logs       configured\t✓") || !strings.Contains(out.String(), "OTel metrics    configured\t✓") {
 		t.Fatalf("doctor code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "Collector        running\t✓") {
+		t.Fatalf("doctor did not use liveness probe: %s", out.String())
 	}
 }
 
@@ -607,5 +641,25 @@ func TestStartStatusAndStopErrors(t *testing.T) {
 	t.Cleanup(func() { signalPID = oldSignal })
 	if code := Run(context.Background(), []string{"stop"}, strings.NewReader(""), &out, &errOut); code != 0 {
 		t.Fatalf("stop code=%d", code)
+	}
+}
+
+// Regression anchor for CU-20260924-005: per-session import failures no longer
+// abort the pass, so startup reports them instead, bounded.
+func TestReportImportFailuresIsBoundedAndSilentWithoutFailures(t *testing.T) {
+	var quiet strings.Builder
+	reportImportFailures(&quiet, "Codex", ingest.Result{Imported: 3, Warnings: []string{"Codex thread metadata unavailable"}})
+	if quiet.Len() != 0 {
+		t.Fatalf("reported without failures: %q", quiet.String())
+	}
+	warnings := make([]string, maxReportedImportWarnings+2)
+	for index := range warnings {
+		warnings[index] = fmt.Sprintf("2026/%d.jsonl: rejected", index)
+	}
+	var report strings.Builder
+	reportImportFailures(&report, "Codex", ingest.Result{Failed: len(warnings), Warnings: warnings})
+	lines := strings.Split(strings.TrimSpace(report.String()), "\n")
+	if len(lines) != maxReportedImportWarnings+1 || !strings.Contains(lines[0], "Codex import: 7 could not be imported") || !strings.Contains(lines[1], "2026/0.jsonl") || strings.Contains(report.String(), "2026/6.jsonl") {
+		t.Fatalf("report=%q", report.String())
 	}
 }

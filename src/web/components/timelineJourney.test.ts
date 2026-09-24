@@ -1,7 +1,7 @@
 /** @module TimelineJourneyTest @description Verifies human-scale prompt checkpoints derived from dense session evidence. */
 import {describe,expect,it} from "vitest";
 import type {Session,Turn} from "../types";
-import {buildTimelineJourney} from "./timelineJourney";
+import {buildTimelineJourney,journeyEntries,type JourneyCheckpoint} from "./timelineJourney";
 
 const turn=(id:string,sequence:number,start:string,end:string):Turn=>({id,sequence,started_at:start,ended_at:end,user_prompt_redacted:`Prompt ${sequence}`,input_tokens:10,cached_input_tokens:5,output_tokens:2,reasoning_tokens:0});
 
@@ -18,8 +18,10 @@ describe("timeline journey",()=>{
     const journey=buildTimelineJourney(session);
     expect(journey).toHaveLength(2);
     expect(journey[0]).toMatchObject({sequence:1,toolCount:2,mcpCount:1,failedCount:0,categories:{read:1,edit:1}});
-    expect(journey[0].notes).toEqual([{id:"steer",kind:"STEER / QUEUE",text:"Also verify mobile",at:"2026-01-01T00:01:00Z"}]);
+    expect(journey[0].notes).toEqual([{id:"steer",kind:"STEER / QUEUE",text:"Also verify mobile",at:"2026-01-01T00:01:00Z",compaction:false}]);
+    expect(journey[0].calls.map(call=>call.id)).toEqual(["read","edit"]);
     expect(journey[1]).toMatchObject({sequence:2,toolCount:1,mcpCount:0,failedCount:1,categories:{validation:1}});
+    expect(journey[1].notes[0]).toMatchObject({id:"compact",compaction:true});
   });
 
   it("attaches unassigned notable events to the nearest preceding prompt",()=>{
@@ -70,5 +72,29 @@ describe("timeline journey",()=>{
     expect(journey.map(checkpoint=>checkpoint.toolCount)).toEqual([2,2]);
     expect(buildTimelineJourney({id:"empty",title:"Empty",started_at:"2026-01-01T00:00:00Z",ended_at:"2026-01-01T00:01:00Z",status:"completed",archived:false,tool_calls:[calls[0]],events:[{id:"event",timestamp:"2026-01-01T00:00:30Z",event_type:"context"}]})).toEqual([]);
     expect(buildTimelineJourney({id:"quiet",title:"Quiet",started_at:one.started_at,ended_at:one.ended_at,status:"completed",archived:false,turns:[one]})).toMatchObject([{toolCount:0,failedCount:0,categories:{},notes:[]}]);
+  });
+
+  it("orders each checkpoint's calls by time whatever order the record lists them in",()=>{
+    const session:Session={id:"s",title:"t",started_at:"2026-01-01T00:00:00Z",ended_at:"2026-01-01T00:05:00Z",status:"completed",archived:false,turns:[turn("one",1,"2026-01-01T00:00:00Z","2026-01-01T00:05:00Z")],tool_calls:[
+      {id:"late",turn_id:"one",timestamp:"2026-01-01T00:03:00Z",tool_name:"exec",tool_category:"execute",success:true},
+      {id:"early",turn_id:"one",timestamp:"2026-01-01T00:01:00Z",tool_name:"exec",tool_category:"execute",success:true},
+    ]};
+    expect(buildTimelineJourney(session)[0].calls.map(call=>call.id)).toEqual(["early","late"]);
+  });
+
+  it("keeps every failed call, then recorded events, then the latest routine calls up to the cap",()=>{
+    const call=(id:string,second:number,success=true)=>({id,turn_id:"one",timestamp:`2026-01-01T00:00:${String(second).padStart(2,"0")}Z`,tool_name:"exec",tool_category:"execute",success});
+    const checkpoint:JourneyCheckpoint={id:"one",sequence:1,startedAt:"2026-01-01T00:00:00Z",endedAt:"2026-01-01T00:01:00Z",prompt:"p",turn:turn("one",1,"2026-01-01T00:00:00Z","2026-01-01T00:01:00Z"),toolCount:6,mcpCount:0,failedCount:2,categories:{},
+      notes:[{id:"n1",kind:"HOOK",text:"a",at:"2026-01-01T00:00:05Z",compaction:false},{id:"n2",kind:"HOOK",text:"b",at:"2026-01-01T00:00:15Z",compaction:false}],
+      calls:[call("c1",1),call("f1",2,false),call("c2",3),call("c3",20),call("f2",21,false),call("c4",30)]};
+    const ids=(cap:number,filter:"all"|"failed"="all")=>{const result=journeyEntries(checkpoint,filter,cap);return {ids:result.shown.map(entry=>entry.kind==="call"?entry.call.id:entry.note.id),hidden:result.hidden}};
+    expect(ids(99)).toEqual({ids:["c1","f1","c2","n1","n2","c3","f2","c4"],hidden:0});
+    expect(ids(5)).toEqual({ids:["f1","n1","n2","f2","c4"],hidden:3});
+    expect(ids(4)).toEqual({ids:["f1","n1","n2","f2"],hidden:4});
+    expect(ids(3)).toEqual({ids:["f1","n2","f2"],hidden:5});
+    expect(ids(1)).toEqual({ids:["f1","f2"],hidden:6});
+    expect(ids(0)).toEqual({ids:["f1","f2"],hidden:6});
+    expect(ids(99,"failed")).toEqual({ids:["f1","f2"],hidden:0});
+    expect(journeyEntries(checkpoint,"all",99).shown.map(entry=>entry.kind)).toEqual(["call","call","call","note","note","call","call","call"]);
   });
 });

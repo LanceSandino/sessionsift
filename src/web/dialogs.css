@@ -1,0 +1,59 @@
+/** @module DialogStyles @description Native modal dialogs, the support grant flow, the command palette and transient notices. */
+dialog{padding:0;width:480px;max-width:calc(100vw - 28px);max-height:calc(100dvh - 40px);border:1px solid var(--line);border-radius:12px;background:var(--paper);color:var(--ink);box-shadow:var(--shadow);overflow:hidden}
+dialog[open]{display:flex;flex-direction:column}
+dialog.wide{width:600px}
+dialog::backdrop{background:var(--scrim);backdrop-filter:blur(3px)}
+.dialog-head{padding:22px 23px 0;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0}
+.dialog-head h2{font-size:20px}
+.dialog-body{padding:13px 23px 24px;overflow:auto;overscroll-behavior:contain;min-height:0}
+.dialog-body>p,.dialog-copy{font-size:12px;color:var(--muted);line-height:1.75}
+.dialog-body .field-label{margin:20px 0 8px}
+.dialog-tabs{display:flex;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:5px;padding:2px;margin:14px 0 4px}
+.dialog-tabs button{flex:1;font-size:11px;padding:5px;border-radius:3px;color:var(--muted)}
+.dialog-tabs button.active{background:var(--paper);color:var(--ink);box-shadow:0 1px 2px #0000000a}
+.dialog-session{border:1px solid var(--line);border-radius:6px;display:flex;gap:9px;align-items:center;padding:12px;margin-top:18px;font-size:11px;min-width:0}
+.dialog-session>div{min-width:0}
+.dialog-session strong{overflow-wrap:anywhere}
+.dialog-session small{color:var(--muted);display:block;font-size:10px;margin-top:3px}
+.dialog-session>svg{width:17px;height:17px;color:var(--accent)}
+.permission-options{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;border:0;padding:0;margin:0}
+.permission-options label{cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:10px;display:block;position:relative;min-width:0}
+.permission-options label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.permission-options input{accent-color:var(--accent);margin:0 0 5px}
+.permission-options strong{display:block;font-size:11px;font-weight:550}
+.permission-options small{display:block;font-size:9px;color:var(--muted);margin-top:3px}
+.dialog-footer{margin-top:22px;display:flex;align-items:center;gap:10px}
+.dialog-footer .button{flex:1}
+.privacy-line{display:flex;gap:7px;align-items:flex-start;margin-top:15px;font-size:10px;color:var(--muted);line-height:1.7}
+.privacy-line .icon{width:14px;height:14px;flex-shrink:0;margin-top:2px}
+.support-code{padding:17px 10px;background:var(--soft);border:1px solid var(--line);border-radius:7px;text-align:center;margin:19px 0 10px;font:550 clamp(18px,5vw,26px) var(--mono);letter-spacing:2px;white-space:nowrap;overflow-x:auto}
+.code-expiry{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:10px;color:var(--muted);flex-wrap:wrap}
+.support-state{margin-top:18px;padding:14px;border:1px solid var(--line);border-radius:6px;font-size:11px}
+.support-state.connected{border-color:var(--accent);background:var(--accent-soft)}
+.support-state strong{display:block;font-size:13px;margin-bottom:4px;overflow-wrap:anywhere}
+.support-state small{color:var(--muted);font-size:10px}
+.share-check{display:flex;gap:9px;align-items:flex-start;font-size:11px;line-height:1.6;margin:12px 0;color:var(--muted)}
+.share-check input{accent-color:var(--accent);margin-top:3px;flex-shrink:0}
+.sharingPreview{border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin:14px 0 0;font-size:11px}
+.sharingPreview summary{cursor:pointer;color:var(--accent)}
+.sharingPreview>p{color:var(--muted);line-height:1.7;margin:8px 0}
+.sharingPreviewScroll{max-height:32dvh;overflow:auto;overscroll-behavior:contain;padding:4px 2px}
+.sharingPreview article{border-top:1px solid var(--line);padding:8px 0}
+.sharingPreview h4{font-size:11px;margin-bottom:4px}
+.sharingPreview details{border-top:1px solid var(--line);padding:6px 0}
+
+/* Command palette. */
+#command-dialog{width:560px}
+.command-input{width:100%;font-size:15px;padding:20px;border:0;background:transparent;border-bottom:1px solid var(--line);outline:none}
+.command-results{padding:8px;max-height:350px;overflow-y:auto;overscroll-behavior:contain}
+.command-result{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:11px 10px;border-radius:5px;font-size:12px;min-width:0}
+.command-result span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.command-result:hover,.command-result:focus-visible,.command-result.active{background:var(--accent-soft);outline:none}
+.command-result .icon{width:15px;height:15px;color:var(--muted)}
+.command-result small{margin-left:auto;color:var(--muted);font-size:9px;flex-shrink:0}
+.command-footer{border-top:1px solid var(--line);padding:10px 17px;color:var(--muted);font-size:10px;display:flex;gap:12px}
+.toast{position:fixed;bottom:39px;left:50%;transform:translateX(-50%);padding:11px 16px;background:var(--ink);color:var(--paper);border-radius:7px;box-shadow:var(--shadow);max-width:calc(100vw - 30px);width:max-content;font-size:12px;z-index:30}
+.source-list{display:grid;gap:8px;margin:16px 0}
+.source-list .dialog-session{margin:0}
+.source-list .badge{margin-left:auto}
+.command-line{display:block;padding:8px 10px;margin-top:6px;background:var(--code);border-radius:4px;font:11px var(--mono);overflow-wrap:anywhere}
