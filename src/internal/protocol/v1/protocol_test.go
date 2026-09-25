@@ -27,6 +27,10 @@ func TestDefinitionsAreBoundedDomainOperations(t *testing.T) {
 	if _, ok := DefinitionFor("shell.exec"); ok {
 		t.Fatal("generic shell capability must fail closed")
 	}
+	sessionGet, _ := DefinitionFor(SessionGet)
+	if sessionGet.MaximumResponseBytes < 16<<20 {
+		t.Fatalf("session.get limit=%d; long sessions need at least 16 MiB of bounded response headroom", sessionGet.MaximumResponseBytes)
+	}
 }
 
 func TestRequestValidationFailsClosed(t *testing.T) {

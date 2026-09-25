@@ -9,6 +9,7 @@ import {Connections} from "./components/Connections";
 import {Diagnostics} from "./components/Diagnostics";
 import {Icon} from "./components/Icon";
 import {ImportDialog} from "./components/ImportDialog";
+import {Optimize} from "./components/Optimize";
 import {SessionNavigator} from "./components/SessionNavigator";
 import {SessionWorkspace} from "./components/SessionWorkspace";
 import {ShareDialog} from "./components/ShareDialog";
@@ -40,6 +41,7 @@ const drawerQuery="(max-width: 800px)";
 const pageTitles:Record<Exclude<Page,"sessions">,{title:string;meta:string}>={
   analytics:{title:"Analytics",meta:"Aggregates only · across every source"},
   compare:{title:"Compare",meta:"Two sessions · observed metrics"},
+  optimize:{title:"Optimize",meta:"Recommendations · experiments · weekly report"},
   connections:{title:"Connections",meta:"Owner controls · local authority"},
   diagnostics:{title:"Diagnostics",meta:"Local health · this device"},
 };
@@ -142,6 +144,7 @@ export function App(){
       {id:"action:import",label:"Import conversations",icon:"import",kind:"action",run:()=>setOverlay("import")},
       {id:"page:analytics",label:"Analytics",icon:"chart",kind:"page",run:()=>changePage("analytics")},
       {id:"page:compare",label:"Compare sessions",icon:"compare",kind:"page",run:()=>changePage("compare")},
+      {id:"page:optimize",label:"Optimize workflow",icon:"spark",kind:"page",run:()=>changePage("optimize")},
       {id:"page:connections",label:"Connections",icon:"link",kind:"page",run:()=>changePage("connections")},
       {id:"page:diagnostics",label:"Diagnostics",icon:"health",kind:"page",run:()=>changePage("diagnostics")},
     );
@@ -166,6 +169,7 @@ export function App(){
       <div className="workbench"><section className="main-pane" aria-label={title}><div className="main-scroll" tabIndex={0}>
         {page==="analytics"&&(analytics?<Analytics report={analytics}/>:<Message icon="chart" title="Calculating local aggregates…" body="Only counts and totals are computed; no conversation text is read for this page."/>)}
         {page==="compare"&&<Compare sessions={visibleSessions} initial={visibleSessions.some(item=>item.id===selected)?selected:visibleSessions[0]?.id}/>}
+        {page==="optimize"&&<Optimize sessions={visibleSessions}/>}
         {page==="connections"&&<Connections/>}
         {page==="diagnostics"&&<Diagnostics sessions={sessions} status={diagnostics} statusError={diagnosticsError}/>}
       </div></section></div>

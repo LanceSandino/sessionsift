@@ -9,6 +9,7 @@ export const destinations:readonly {page:Page;label:string;icon:IconName;href:st
   {page:"sessions",label:"Sessions",icon:"chat",href:"/"},
   {page:"analytics",label:"Analytics",icon:"chart",href:"/analytics"},
   {page:"compare",label:"Compare",icon:"compare",href:"/compare"},
+  {page:"optimize",label:"Optimize",icon:"spark",href:"/optimize",hint:"Optimize · turn recommendations into measured experiments"},
   {page:"connections",label:"Connections",icon:"link",href:"/connections",hint:"Connections · bridge, support codes, MCP approvals, manual pairing and revocation"},
 ];
 

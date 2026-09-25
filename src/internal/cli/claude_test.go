@@ -60,7 +60,7 @@ func TestImportIncludesClaudeCodeAndClaudeExports(t *testing.T) {
 	previousHealth := getHealth
 	getHealth = func() (*http.Response, error) { return nil, context.DeadlineExceeded }
 	t.Cleanup(func() { getHealth = previousHealth })
-	if code := Run(context.Background(), []string{"doctor"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Claude Code      1 found") || !strings.Contains(out.String(), "Claude sessions  1 imported") || !strings.Contains(out.String(), "Claude.ai chats  1 imported") || !strings.Contains(out.String(), "watching conversations.json") {
+	if code := Run(context.Background(), []string{"doctor"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Claude Code\n  Session files    1 found") || !strings.Contains(out.String(), "  Database records 1") || !strings.Contains(out.String(), "Claude.ai\n  Export           watching conversations.json") || !strings.Contains(out.String(), "Claude.ai\n") || !strings.Contains(out.String(), "Analytics        2 conversations included") || !strings.Contains(out.String(), "Parser notices   0 across 0 sessions (non-fatal)") || !strings.Contains(out.String(), "Skipped records  0 warning groups may contain skipped data") {
 		t.Fatalf("doctor=%s", out.String())
 	}
 }

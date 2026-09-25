@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,6 +119,9 @@ func TestExecuteOmitsSessionsWithoutConversationEvidenceFromListsAndAnalytics(t 
 	if report.Summary.Sessions != 2 {
 		t.Fatalf("empty shells inflated analytics: %+v", report.Summary)
 	}
+	if report.Inventory.StoredRecords != 4 || report.Inventory.IncludedSessions != 2 || report.Inventory.InternalReviewRecords != 1 || report.Inventory.TelemetryOnlyRecords != 1 {
+		t.Fatalf("analytics exclusions are not explained: %+v", report.Inventory)
+	}
 	if _, err := store.GetSession(context.Background(), emptyReview.ID); err != nil {
 		t.Fatalf("empty audit record should remain retrievable: %v", err)
 	}
@@ -158,6 +162,18 @@ func TestExecuteEnforcesResponseLimit(t *testing.T) {
 	}
 }
 
+// Regression anchor: real, long-running Codex conversations can exceed the
+// original 8 MiB session.get ceiling while remaining safe for the bounded UI
+// response. Keep enough headroom for those sessions without removing the cap.
+func TestExecuteAllowsLargeBoundedSessionGet(t *testing.T) {
+	large := domain.Session{ID: "large", ExternalSessionID: "large", Title: strings.Repeat("a", (8<<20)+1), Kind: domain.DeveloperSession}
+	agent := NewLocal(staticRepository{sessions: []domain.Session{large}})
+	response := agent.Execute(context.Background(), request(t, "large-session", protocol.SessionGet, SessionArguments{SessionID: large.ID}))
+	if response.Status != protocol.StatusOK || response.Error != nil {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
 func TestStorageFailureDoesNotMasqueradeAsMissingSession(t *testing.T) {
 	store := serviceStore(t)
 	if err := store.Close(); err != nil {
@@ -176,7 +192,12 @@ type staticRepository struct {
 func (r staticRepository) ListSessions(context.Context) ([]domain.Session, error) {
 	return r.sessions, nil
 }
-func (r staticRepository) GetSession(context.Context, string) (domain.Session, error) {
+func (r staticRepository) GetSession(_ context.Context, id string) (domain.Session, error) {
+	for _, session := range r.sessions {
+		if session.ID == id {
+			return session, nil
+		}
+	}
 	return domain.Session{}, errors.New("missing")
 }
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/LanceSandino/sessionsift/src/internal/accessauth"
 	"github.com/LanceSandino/sessionsift/src/internal/agent/service"
+	"github.com/LanceSandino/sessionsift/src/internal/analytics"
 	"github.com/LanceSandino/sessionsift/src/internal/api"
 	"github.com/LanceSandino/sessionsift/src/internal/app"
 	bridgeapp "github.com/LanceSandino/sessionsift/src/internal/bridge"
@@ -693,19 +694,19 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 	configBody, _ := os.ReadFile(filepath.Join(home, "config.toml"))
 	hooksBody, _ := os.ReadFile(filepath.Join(home, "hooks.json"))
 	configText := string(configBody) + string(hooksBody)
-	hooks := "not configured\t!"
+	hooks := "not configured (optional)\t–"
 	if strings.Contains(configText, "\"command\"") && strings.Contains(configText, " hook") {
 		hooks = "configured\t✓"
 	}
-	otelLogs := "not configured (optional)\t!"
+	otelLogs := "not configured (optional)\t–"
 	if strings.Contains(string(configBody), "/v1/logs") && strings.Contains(string(configBody), "otel") {
 		otelLogs = "configured\t✓"
 	}
-	otelMetrics := "not configured (optional)\t!"
+	otelMetrics := "not configured (optional)\t–"
 	if strings.Contains(string(configBody), "/v1/metrics") && strings.Contains(string(configBody), "metrics_exporter") {
 		otelMetrics = "configured\t✓"
 	}
-	history := "not found\t!"
+	history := "not found (optional)\t–"
 	if _, statErr := os.Stat(filepath.Join(home, "history.jsonl")); statErr == nil {
 		history = "available\t✓"
 	}
@@ -717,15 +718,17 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 		}
 	}
 	database := "not initialized\t!"
-	warnings := 0
-	chatCount := 0
+	var inventory analytics.Inventory
+	codexCount, chatCount := 0, 0
 	claudeCodeCount, claudeCount := 0, 0
 	if store, openErr := openStore(paths); openErr == nil {
 		database = paths.Database + "\t✓"
 		if sessions, listErr := store.ListSessions(ctx); listErr == nil {
+			inventory = analytics.Build(sessions).Inventory
 			for _, session := range sessions {
-				warnings += len(session.Warnings)
 				switch session.Source {
+				case domain.SourceCodex:
+					codexCount++
 				case domain.SourceChatGPT:
 					chatCount++
 				case domain.SourceClaudeCode:
@@ -737,7 +740,7 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 		}
 		store.Close()
 	}
-	chatSource := "not configured\t!"
+	chatSource := "not configured (optional)\t–"
 	if path := chatGPTExportPath(paths); path != "" {
 		if _, statErr := os.Stat(path); statErr == nil {
 			chatSource = "watching " + filepath.Base(path) + "\t✓"
@@ -754,8 +757,9 @@ func doctor(ctx context.Context, paths config.Paths, out, errOut io.Writer) int 
 			}
 		}
 	}
-	fmt.Fprintf(out, "Codex home       %s\t✓\nSessions         %d found\t✓\nArchived         %d found\t✓\nChatGPT source   %s\nChatGPT chats    %d imported\nHistory          %s\nHook capture     %s\nOTel logs       %s\nOTel metrics    %s\nCollector        %s\nDatabase         %s\nLatest backup    %s\nParser warnings  %d\n", home, current, archived, chatSource, chatCount, history, hooks, otelLogs, otelMetrics, collector, database, backupState, warnings)
+	fmt.Fprintf(out, "Codex\n  Home             %s\t✓\n  Session files    %d found\t✓\n  Archived files   %d found\t✓\n  Database records %d\n  Prompt history   %s\n  Hooks            %s\n  OTel logs        %s\n  OTel metrics     %s\n  OTel collector   %s\n\nChatGPT\n  Export           %s\n  Database records %d\n\n", home, current, archived, codexCount, history, hooks, otelLogs, otelMetrics, collector, chatSource, chatCount)
 	fmt.Fprint(out, claudeDoctor(paths, claudeCodeCount, claudeCount))
+	fmt.Fprintf(out, "\nSessionSift\n  Database         %s\n  Latest backup    %s\n  Stored records   %d\n  Analytics        %d conversations included\n  Excluded records %d internal reviews · %d telemetry-only placeholders\n  Parser notices   %d across %d sessions (non-fatal)\n  Skipped records  %d warning groups may contain skipped data\n", database, backupState, inventory.StoredRecords, inventory.IncludedSessions, inventory.InternalReviewRecords, inventory.TelemetryOnlyRecords, inventory.ParserWarnings, inventory.ParserWarningSessions, inventory.SkippedRecordWarnings)
 	return 0
 }
 

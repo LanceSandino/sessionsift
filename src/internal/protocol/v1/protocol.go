@@ -55,11 +55,11 @@ type Definition struct {
 
 var definitions = map[Operation]Definition{
 	SessionList:            definition(SessionList, "session.read", 2<<20, true),
-	SessionGet:             definition(SessionGet, "session.read", 8<<20, false),
+	SessionGet:             definition(SessionGet, "session.read", 16<<20, false),
 	SessionMetrics:         definition(SessionMetrics, "session.read", 256<<10, false),
 	SessionTimeline:        definition(SessionTimeline, "session.read", 8<<20, true),
 	SessionFindings:        definition(SessionFindings, "session.read", 2<<20, true),
-	SessionCompare:         definition(SessionCompare, "session.compare", 8<<20, false),
+	SessionCompare:         definition(SessionCompare, "session.compare", 32<<20, false),
 	TurnGet:                definition(TurnGet, "turn.read", 2<<20, false),
 	ConnectionStatus:       definition(ConnectionStatus, "connection.read", 64<<10, false),
 	ConnectionDisconnect:   definition(ConnectionDisconnect, "connection.manage", 64<<10, false),

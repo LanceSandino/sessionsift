@@ -7,10 +7,12 @@ import {libraryGroups,libraryTime,recencyLabel} from "../libraryGroups";
 import {sessionPlace,sourceInfo,sources} from "../sources";
 import {destinations} from "./AppRail";
 import {Icon} from "./Icon";
-import {filterSessions} from "./sessionFilters";
+import {filterSessions,sessionActor,type SessionActorFilter} from "./sessionFilters";
 import {sortOrders,type SessionSortOrder} from "./sessionSort";
 
 const chips=[{id:"",label:"All"},{id:"claude_code",label:"Claude Code"},{id:"codex",label:"Codex"},{id:"chat",label:"Chats"}];
+const actorChips:{id:SessionActorFilter;label:string}[]=[{id:"user",label:"You"},{id:"agent",label:"Agents"},{id:"review",label:"Reviews"},{id:"all",label:"All"}];
+const actorLabels={user:"you",agent:"agent",review:"review"} as const;
 
 type Props={
   sessions:Session[];
@@ -33,17 +35,17 @@ export function SessionNavigator({sessions,selected,page,now,searchRef,onSelect,
   const[highTokens,setHighTokens]=useState(false);
   const[failures,setFailures]=useState(false);
   const[findings,setFindings]=useState(false);
-  const[internal,setInternal]=useState(false);
+  const[actor,setActor]=useState<SessionActorFilter>("user");
   const[filtersOpen,setFiltersOpen]=useState(false);
   const[order,setOrder]=useState<SessionSortOrder>("updated_desc");
   const repos=useMemo(()=>[...new Set(sessions.map(s=>s.repo_display_name).filter(Boolean))].sort() as string[],[sessions]);
   const models=useMemo(()=>[...new Set(sessions.map(s=>s.model).filter(Boolean))].sort() as string[],[sessions]);
-  const filtered=useMemo(()=>filterSessions(sessions,{query,source,repo,model,date,highTokens,failures,findings,internal}),[sessions,query,source,repo,model,date,highTokens,failures,findings,internal]);
+  const filtered=useMemo(()=>filterSessions(sessions,{query,source,repo,model,date,highTokens,failures,findings,actor}),[sessions,query,source,repo,model,date,highTokens,failures,findings,actor]);
   const groups=useMemo(()=>libraryGroups(filtered,order,now),[filtered,order,now]);
   const created=order==="started_desc"||order==="started_asc";
   // Rows active today or yesterday show a clock time; older rows carry it in the tooltip.
   const stamp=(value:string)=>["Today","Yesterday"].includes(recencyLabel(value,now))?clockTime(value):shortDate(value);
-  const extraFilters=[repo,model,date,highTokens,failures,findings,internal,source&&!chips.some(chip=>chip.id===source)].filter(Boolean).length;
+  const extraFilters=[repo,model,date,highTokens,failures,findings,source&&!chips.some(chip=>chip.id===source)].filter(Boolean).length;
   return <aside className="sidebar" aria-label="Session library">
     <div className="workspace-select">
       <div className="grow"><div className="wordmark">Session<span>Sift</span></div><div className="workspace-meta">Local workspace <span className="muted">/</span> This device</div></div>
@@ -55,6 +57,7 @@ export function SessionNavigator({sessions,selected,page,now,searchRef,onSelect,
     <div className="library-head">
       <div className="row between"><span className="eyebrow">Sessions <span className="mono muted" aria-label={`${filtered.length} shown`}>{String(filtered.length).padStart(2,"0")}</span></span><span className="row library-tools"><select className="sort-select" aria-label="Sort conversations" value={order} onChange={event=>setOrder(event.target.value as SessionSortOrder)}>{sortOrders.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select><button type="button" className="icon-btn" aria-label="Import conversations" title="Import conversations" onClick={onImport}><Icon name="plus"/></button></span></div>
       <label className="search-field"><Icon name="search"/><input ref={searchRef} type="search" aria-label="Search sessions" placeholder="Find a session…" value={query} onChange={event=>setQuery(event.target.value)}/><kbd>/</kbd></label>
+      <div className="filter-row actor-row" role="group" aria-label="Filter by starter"><span className="filter-label">Started by</span>{actorChips.map(chip=><button type="button" key={chip.id} className={`filter ${actor===chip.id?"active":""}`} aria-pressed={actor===chip.id} onClick={()=>setActor(chip.id)}>{chip.label}</button>)}</div>
       <div className="filter-row" role="group" aria-label="Filter by source">
         {chips.map(chip=><button type="button" key={chip.id||"all"} className={`filter ${source===chip.id?"active":""}`} aria-pressed={source===chip.id} onClick={()=>setSource(chip.id)}>{chip.label}</button>)}
         <button type="button" className="filter more" aria-expanded={filtersOpen} aria-controls="library-filters" onClick={()=>setFiltersOpen(value=>!value)}><Icon name="filter"/>{filtersOpen?"Hide filters":"Filters"}{extraFilters>0&&<b>{extraFilters}</b>}</button>
@@ -68,16 +71,15 @@ export function SessionNavigator({sessions,selected,page,now,searchRef,onSelect,
           <label><input type="checkbox" checked={highTokens} onChange={event=>setHighTokens(event.target.checked)}/>100k+ tokens</label>
           <label><input type="checkbox" checked={failures} onChange={event=>setFailures(event.target.checked)}/>Failures</label>
           <label><input type="checkbox" checked={findings} onChange={event=>setFindings(event.target.checked)}/>Findings</label>
-          <label><input type="checkbox" checked={internal} onChange={event=>setInternal(event.target.checked)}/>Internal reviews</label>
         </div>
       </div>}
     </div>
     <div className="session-list" role="list" aria-label="Sessions">
       {groups.map(group=><React.Fragment key={group.label}>
         <div className="list-label" role="presentation">{group.label}</div>
-        {group.sessions.map(session=>{const info=sourceInfo(session);const active=session.id===selected;const prompts=session.metrics?.turn_count??session.turns?.length??0;const time=libraryTime(session,order);return <div role="listitem" key={session.id}><button type="button" className={`session-item ${active?"active":""}`} aria-current={active?"true":undefined} onClick={()=>onSelect(session.id)}>
+        {group.sessions.map(session=>{const info=sourceInfo(session);const active=session.id===selected;const prompts=session.metrics?.turn_count??session.turns?.length??0;const time=libraryTime(session,order);const actorKind=sessionActor(session);return <div role="listitem" key={session.id}><button type="button" className={`session-item ${active?"active":""}`} aria-current={active?"true":undefined} onClick={()=>onSelect(session.id)}>
           <span className={`source-icon ${info.tone}`} title={info.label} aria-hidden="true">{info.badge}</span>
-          <span className="grow"><strong>{session.title}</strong><span className="session-meta"><span>{sessionPlace(session)}</span><span aria-hidden="true">·</span><span>{prompts} prompt{prompts===1?"":"s"}</span><span aria-hidden="true">·</span><time dateTime={time} title={`${created?"Created":"Updated"} ${shortDateTime(time)}`}>{stamp(time)}</time>{session.session_kind==="internal_review"&&<span className="internal-tag">internal review</span>}{(session.metrics?.failed_tool_calls||0)>0&&<span className="internal-tag">{session.metrics?.failed_tool_calls} failed</span>}</span></span>
+          <span className="grow"><strong>{session.title}</strong><span className="session-meta"><span className={`actor-tag ${actorKind}`}>{actorLabels[actorKind]}</span><span>{sessionPlace(session)}</span><span aria-hidden="true">·</span><span>{prompts} prompt{prompts===1?"":"s"}</span><span aria-hidden="true">·</span><time dateTime={time} title={`${created?"Created":"Updated"} ${shortDateTime(time)}`}>{stamp(time)}</time>{(session.metrics?.failed_tool_calls||0)>0&&<span className="internal-tag">{session.metrics?.failed_tool_calls} failed</span>}</span></span>
           {active&&<span className="current-dot" aria-hidden="true"/>}
         </button></div>})}
       </React.Fragment>)}

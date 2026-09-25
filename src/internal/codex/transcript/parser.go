@@ -3,7 +3,6 @@
 package transcript
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	"github.com/LanceSandino/sessionsift/src/internal/jsonlines"
 	"github.com/LanceSandino/sessionsift/src/internal/redact"
 	"github.com/LanceSandino/sessionsift/src/internal/toolmeta"
 )
@@ -49,11 +49,10 @@ func (p *Parser) ParseFile(path string, archived bool) (domain.Session, string, 
 	return session, hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// Parse consumes a JSONL transcript and tolerates malformed individual lines.
+// Parse consumes a JSONL transcript and tolerates malformed or oversized individual lines.
 func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) {
 	s := domain.Session{ParserVersion: domain.ParserVersion, Source: domain.SourceCodex, Kind: domain.DeveloperSession, Status: "completed", Archived: archived}
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner := jsonlines.NewScanner(reader, jsonlines.TranscriptRecordLimit)
 	turnIndex := map[string]int{}
 	toolIndex := map[string][]int{}
 	unsupported := map[string]int{}
@@ -63,6 +62,10 @@ func (p *Parser) Parse(reader io.Reader, archived bool) (domain.Session, error) 
 	var fallbackEnd time.Time
 	for scanner.Scan() {
 		lineNumber++
+		if scanner.Oversized() {
+			s.Warnings = append(s.Warnings, fmt.Sprintf("line %d: record exceeds %d MiB and was skipped", lineNumber, jsonlines.TranscriptRecordLimit>>20))
+			continue
+		}
 		line := scanner.Bytes()
 		var record envelope
 		if err := json.Unmarshal(line, &record); err != nil {

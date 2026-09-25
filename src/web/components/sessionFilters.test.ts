@@ -1,9 +1,9 @@
 /** @module SessionFiltersTest @description Mutation-resistant tests for conversation filtering behavior. */
 import {describe,expect,it} from "vitest";
 import type {Session} from "../types";
-import {filterSessions,type SessionFilters} from "./sessionFilters";
+import {filterSessions,sessionActor,type SessionFilters} from "./sessionFilters";
 
-const baseFilters:SessionFilters={query:"",source:"",repo:"",model:"",date:"",highTokens:false,failures:false,findings:false,internal:false};
+const baseFilters:SessionFilters={query:"",source:"",repo:"",model:"",date:"",highTokens:false,failures:false,findings:false,actor:"user"};
 const session=(overrides:Partial<Session>={}):Session=>({
   id:"session-1",
   title:"Responsive workspace",
@@ -20,9 +20,23 @@ const session=(overrides:Partial<Session>={}):Session=>({
 const ids=(sessions:Session[])=>sessions.map(item=>item.id);
 
 describe("filterSessions",()=>{
-  it("keeps ordinary sessions and hides internal reviews by default",()=>{
-    expect(ids(filterSessions([session(),session({id:"review",session_kind:"internal_review"})],baseFilters))).toEqual(["session-1"]);
-    expect(ids(filterSessions([session({id:"review",session_kind:"internal_review"})],{...baseFilters,internal:true}))).toEqual(["review"]);
+  it("separates user conversations, delegated agents, reviews and all records",()=>{
+    const user=session({thread_source:"user"});
+    const agent=session({id:"agent",thread_source:"subagent",surface:"subagent"});
+    const review=session({id:"review",session_kind:"internal_review",thread_source:"guardian_review"});
+    const values=[user,agent,review];
+    expect(ids(filterSessions(values,baseFilters))).toEqual(["session-1"]);
+    expect(ids(filterSessions(values,{...baseFilters,actor:"agent"}))).toEqual(["agent"]);
+    expect(ids(filterSessions(values,{...baseFilters,actor:"review"}))).toEqual(["review"]);
+    expect(ids(filterSessions(values,{...baseFilters,actor:"all"}))).toEqual(["session-1","agent","review"]);
+  });
+
+  it("classifies provider lineage without confusing assistant replies for subagent sessions",()=>{
+    expect(sessionActor(session({thread_source:"user"}))).toBe("user");
+    expect(sessionActor(session({thread_source:undefined}))).toBe("user");
+    expect(sessionActor(session({thread_source:"subagent"}))).toBe("agent");
+    expect(sessionActor(session({surface:"subagent",thread_source:undefined}))).toBe("agent");
+    expect(sessionActor(session({session_kind:"internal_review",thread_source:"guardian_review"}))).toBe("review");
   });
 
   it("treats a missing source as Codex and filters explicit ChatGPT sessions",()=>{

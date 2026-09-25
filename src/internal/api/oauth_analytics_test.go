@@ -82,7 +82,7 @@ func TestAnalyticsAndProtectedResourceMetadataExcludeConversationText(t *testing
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, localRequest(http.MethodGet, "/api/v1/analytics", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"sessions":1`) || strings.Contains(recorder.Body.String(), "sensitive prompt") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"sessions":1`) || !strings.Contains(recorder.Body.String(), `"stored_records":1`) || !strings.Contains(recorder.Body.String(), `"included_sessions":1`) || strings.Contains(recorder.Body.String(), "sensitive prompt") {
 		t.Fatalf("analytics=%d %s", recorder.Code, recorder.Body.String())
 	}
 	metadata := httptest.NewRecorder()

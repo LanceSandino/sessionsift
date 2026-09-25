@@ -14,7 +14,7 @@ import {first,json,metrics,second} from "./testFixtures";
 
 afterEach(()=>{cleanup();vi.unstubAllGlobals()});
 
-const report:AnalyticsReport={summary:{sessions:2,turns:4,duration_ms:60000,input_tokens:400,cached_input_tokens:100,output_tokens:80,reasoning_tokens:20,cache_ratio:.25,tool_calls:6,mcp_calls:2,app_tool_calls:1,failed_tool_calls:1,findings:2},daily:[{date:"2026-09-19",sessions:2,input_tokens:400,cached_tokens:100,output_tokens:80,tool_calls:6,failed_tool_calls:1}],sources:[{name:"codex",sessions:2,input_tokens:400,tool_calls:6,failed_tool_calls:1}],models:[{name:"gpt-6",sessions:2,input_tokens:400,tool_calls:6,failed_tool_calls:1}],repositories:[{name:"sessionsift",sessions:2,input_tokens:400,tool_calls:6,failed_tool_calls:1}],tools:[{name:"exec",transport:"builtin",calls:3,failed:1},{name:"create_design",transport:"mcp",server:"canva",calls:1,failed:0}],findings:[{type:"possible_scope_correction",severity:"warning",confidence:"possible",count:2,sessions:2}],recommendations:[{id:"scope",title:"Clarify scope earlier",summary:"State the target component.",confidence:"derived",evidence:["2 findings"]}]};
+const report:AnalyticsReport={summary:{sessions:2,turns:4,duration_ms:60000,input_tokens:400,cached_input_tokens:100,output_tokens:80,reasoning_tokens:20,cache_ratio:.25,tool_calls:6,mcp_calls:2,app_tool_calls:1,failed_tool_calls:1,findings:2},inventory:{stored_records:6,included_sessions:2,internal_review_records:3,telemetry_only_records:1,parser_warning_sessions:2,parser_warnings:4,skipped_record_warnings:1},daily:[{date:"2026-09-19",sessions:2,input_tokens:400,cached_tokens:100,output_tokens:80,tool_calls:6,failed_tool_calls:1}],sources:[{name:"codex",sessions:2,input_tokens:400,tool_calls:6,failed_tool_calls:1}],models:[{name:"gpt-6",sessions:2,input_tokens:400,tool_calls:6,failed_tool_calls:1}],repositories:[{name:"sessionsift",sessions:2,input_tokens:400,tool_calls:6,failed_tool_calls:1}],tools:[{name:"exec",transport:"builtin",calls:3,failed:1},{name:"create_design",transport:"mcp",server:"canva",calls:1,failed:0}],findings:[{type:"possible_scope_correction",severity:"warning",confidence:"possible",count:2,sessions:2}],recommendations:[{id:"scope",title:"Clarify scope earlier",summary:"State the target component.",confidence:"derived",evidence:["2 findings"]}]};
 
 describe("analytics",()=>{
   it("shows privacy-safe aggregates, breakdowns, tools, recommendations and finding patterns",()=>{
@@ -28,6 +28,9 @@ describe("analytics",()=>{
     expect(screen.getByText("possible scope correction")).toBeInTheDocument();
     expect(screen.getByLabelText("Input tokens by start date")).toBeInTheDocument();
     expect(screen.getByText(/^2 sessions from/)).toBeInTheDocument();
+    expect(screen.getByText(/2 analyzed conversations from 6 stored records/)).toBeInTheDocument();
+    expect(screen.getByText(/3 internal auto-reviews and 1 telemetry-only placeholder/)).toBeInTheDocument();
+    expect(screen.getByText(/4 parser notices across 2 sessions; 1 may include skipped records/)).toBeInTheDocument();
   });
 
   it("counts a single session in the singular",()=>{
@@ -72,7 +75,7 @@ describe("diagnostics",()=>{
     render(<Diagnostics sessions={[first,{...second,archived:true},{...second,id:"c",source:"claude_code"},{...second,id:"g",source:"chatgpt"},{...second,id:"i",session_kind:"internal_review",warnings:["w"]}]}/>);
     expect(screen.getByText("Claude Code sessions").parentElement?.nextElementSibling).toHaveTextContent("1");
     expect(screen.getByText("Archived Codex sessions").parentElement?.nextElementSibling).toHaveTextContent("1");
-    expect(screen.getByText("Parser warnings").closest(".health-row")).toHaveClass("attention");
+    expect(screen.getByText("Parser notices").closest(".health-row")).toHaveClass("attention");
     expect(screen.getByText("ChatGPT conversations").closest(".health-row")).toHaveClass("ok");
     expect(screen.getByText("Claude.ai conversations").closest(".health-row")).toHaveClass("optional");
     expect(screen.getByRole("button",{name:"Preview safe report"})).toBeInTheDocument();

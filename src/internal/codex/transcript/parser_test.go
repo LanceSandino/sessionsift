@@ -279,6 +279,18 @@ func TestParseFileHashesInput(t *testing.T) {
 	}
 }
 
+// Regression anchor for CU-20260924-011: Codex can emit a single JSONL
+// record larger than the old 16 MiB Scanner ceiling (for example, a large
+// tool result). One such record must not hide the entire session.
+func TestParserAcceptsLargeTranscriptRecords(t *testing.T) {
+	input := `{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"large-session","extra":"` +
+		strings.Repeat("a", 17*1024*1024) + `"}}`
+	session, err := New().Parse(strings.NewReader(input), false)
+	if err != nil || session.ID != "large-session" {
+		t.Fatalf("session=%+v err=%v", session, err)
+	}
+}
+
 func TestTranscriptIDWinsOverParentSessionID(t *testing.T) {
 	input := `{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"child","session_id":"parent"}}`
 	session, err := New().Parse(strings.NewReader(input), false)

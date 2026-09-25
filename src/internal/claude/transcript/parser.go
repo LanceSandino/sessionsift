@@ -3,7 +3,6 @@
 package transcript
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
+	"github.com/LanceSandino/sessionsift/src/internal/jsonlines"
 	"github.com/LanceSandino/sessionsift/src/internal/redact"
 )
 
@@ -46,10 +46,13 @@ func (p *Parser) Parse(reader io.Reader, subagent bool) (domain.Session, error) 
 func parse(reader io.Reader, subagent bool, hints identityHints) (domain.Session, string, error) {
 	st := newState(subagent)
 	hash := sha256.New()
-	scanner := bufio.NewScanner(io.TeeReader(reader, hash))
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner := jsonlines.NewScanner(io.TeeReader(reader, hash), jsonlines.TranscriptRecordLimit)
 	for scanner.Scan() {
 		st.line++
+		if scanner.Oversized() {
+			st.s.Warnings = append(st.s.Warnings, fmt.Sprintf("line %d: record exceeds %d MiB and was skipped", st.line, jsonlines.TranscriptRecordLimit>>20))
+			continue
+		}
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue

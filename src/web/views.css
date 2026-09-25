@@ -13,6 +13,38 @@
 .section-head h3{font-size:13px}
 .section-head small{color:var(--muted)}
 
+/* Optimize: a fixed-workspace control center for the personal improvement loop. */
+.content-page.optimize-page{max-width:none;margin:0;padding:24px 28px 36px}
+.optimize-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px}
+.report-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.report-actions .button svg{width:14px;height:14px}
+.optimization-shell{display:grid;grid-template-columns:minmax(0,1fr) minmax(270px,340px);gap:24px;align-items:start}
+.optimization-main{min-width:0}
+.optimization-side{display:grid;gap:14px;position:sticky;top:0}
+.loop-steps{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;border:1px solid var(--line);border-radius:8px;padding:14px 18px;background:var(--soft)}
+.loop-steps>div{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:9px;align-items:center;min-width:0}
+.loop-steps>div>span{grid-row:1/3;display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--line);border-radius:50%;font:600 10px var(--mono);color:var(--accent);background:var(--paper)}
+.loop-steps b{font-size:11px}.loop-steps small{font-size:9px;color:var(--muted)}
+.loop-steps>.icon{width:15px;height:15px;color:var(--faint);margin:0 12px}
+.recommendation-grid,.experiment-list{display:grid;gap:10px}
+.optimization-recommendation{margin:0;border:1px solid var(--line);border-radius:7px;padding:14px;background:var(--paper)}
+.optimization-recommendation .status-pill{font-size:8px;padding:3px 7px;text-transform:uppercase;letter-spacing:.4px}
+.optimization-recommendation .compact-field{display:flex;align-items:center;gap:9px;margin-top:10px;font-size:9px;color:var(--muted)}
+.optimization-recommendation .compact-field .field{margin-left:auto;width:120px;padding:5px 7px;font-size:10px}
+.experiment-card{border:1px solid var(--line);border-radius:8px;padding:17px;background:var(--paper)}
+.experiment-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.experiment-head h4{font-size:14px;margin:4px 0}.experiment-head p{font-size:10px;color:var(--muted)}
+.experiment-route{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:10px;align-items:center;margin:15px 0;padding:12px;border-radius:6px;background:var(--soft)}
+.experiment-route div{min-width:0}.experiment-route small{display:block;font-size:8px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:4px}.experiment-route b{font-size:10px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.experiment-route svg{width:14px;color:var(--muted)}
+.delta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px}
+.delta{border-left:2px solid var(--line);padding:7px 10px;min-width:0}.delta small,.delta span{display:block;font-size:8px;color:var(--muted)}.delta strong{display:block;font:600 12px var(--mono);margin:4px 0}.delta strong.up{color:var(--amber)}.delta strong.down{color:var(--teal)}
+.measure-row{display:flex;align-items:end;gap:10px}.measure-row label{font-size:9px;color:var(--muted);flex:1}.measure-row .field{margin-top:5px}.measure-row .button{flex-shrink:0}
+.optimization-form,.weekly-card,.privacy-card{border:1px solid var(--line);border-radius:8px;padding:17px;background:var(--soft)}
+.optimization-form h3,.weekly-card h3{font-size:14px;margin:5px 0 7px}.optimization-form>p,.weekly-card>p,.privacy-card p{font-size:10px;line-height:1.65;color:var(--muted)}
+.optimization-form label{display:block;font-size:9px;color:var(--muted);margin-top:11px}.optimization-form .field{margin-top:5px}.optimization-form textarea{min-height:64px;resize:vertical}.optimization-form>.button{width:100%;margin-top:13px;justify-content:center}
+.weekly-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.weekly-grid div{background:var(--paper);border:1px solid var(--line);border-radius:5px;padding:9px}.weekly-grid strong,.weekly-grid small{display:block}.weekly-grid strong{font:600 16px var(--mono)}.weekly-grid small{font-size:8px;color:var(--muted);margin-top:2px}
+.privacy-card summary{cursor:pointer;display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600}.privacy-card summary svg{width:15px;color:var(--accent)}.privacy-card p{margin-top:10px}
+
 /* Timeline: prompt-centred journey. */
 .timeline-group{border-left:1px solid var(--line);margin-left:10px;padding-left:25px;margin-bottom:27px;position:relative;scroll-margin-top:14px}
 .timeline-group:before{content:"";position:absolute;left:-5px;top:8px;width:9px;height:9px;border:2px solid var(--accent);background:var(--paper);border-radius:50%}

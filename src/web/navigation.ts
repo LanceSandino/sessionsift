@@ -1,11 +1,11 @@
 /** @module Navigation @description Maps SessionSift workspace pages and session views to History API routes without full-page reloads. */
-export type Page="sessions"|"analytics"|"compare"|"connections"|"diagnostics";
+export type Page="sessions"|"analytics"|"compare"|"optimize"|"connections"|"diagnostics";
 export type SessionView="conversation"|"timeline"|"tools"|"review";
 export type Route={page:Page;sessionId?:string;view?:SessionView};
 
 export const sessionViews:readonly SessionView[]=["conversation","timeline","tools","review"];
 
-const pagePaths:Record<Exclude<Page,"sessions">,string>={analytics:"/analytics",compare:"/compare",connections:"/connections",diagnostics:"/diagnostics"};
+const pagePaths:Record<Exclude<Page,"sessions">,string>={analytics:"/analytics",compare:"/compare",optimize:"/optimize",connections:"/connections",diagnostics:"/diagnostics"};
 // Earlier builds linked these; they now open the connection workspace.
 const legacyConnectionPaths=new Set(["/remote-access","/remote-review"]);
 

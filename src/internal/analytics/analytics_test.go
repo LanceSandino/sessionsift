@@ -27,7 +27,8 @@ func TestBuildAggregatesObservedSessionData(t *testing.T) {
 			Turns:     []domain.Turn{{StartedAt: start.Add(24 * time.Hour), EndedAt: start.Add(24*time.Hour + 10*time.Minute), InputTokens: 300, CachedInputTokens: 60, OutputTokens: 50}},
 			ToolCalls: []domain.ToolCall{{ToolName: "web", ToolTransport: "app", Success: true}},
 		},
-		{ID: "internal", Kind: domain.InternalReviewSession, Source: domain.SourceCodex, StartedAt: start},
+		{ID: "internal", Kind: domain.InternalReviewSession, Source: domain.SourceCodex, StartedAt: start, Warnings: []string{"preserved 2 unsupported future records"}},
+		{ID: "placeholder", Title: "Live Codex session", Source: domain.SourceCodex, Status: "live", StartedAt: start, Warnings: []string{"line 7: malformed JSON"}},
 	}
 
 	report := Build(sessions)
@@ -51,6 +52,25 @@ func TestBuildAggregatesObservedSessionData(t *testing.T) {
 	}
 	if len(report.Recommendations) == 0 || report.Recommendations[0].Confidence != "derived" {
 		t.Fatalf("recommendations=%+v", report.Recommendations)
+	}
+	if report.Inventory.StoredRecords != 4 || report.Inventory.IncludedSessions != 2 || report.Inventory.InternalReviewRecords != 1 || report.Inventory.TelemetryOnlyRecords != 1 {
+		t.Fatalf("inventory=%+v", report.Inventory)
+	}
+	if report.Inventory.ParserWarnings != 2 || report.Inventory.ParserWarningSessions != 2 || report.Inventory.SkippedRecordWarnings != 1 {
+		t.Fatalf("parser inventory=%+v", report.Inventory)
+	}
+}
+
+func TestWarningMayHaveSkippedRecordsDistinguishesLossFromCompatibility(t *testing.T) {
+	for _, warning := range []string{"line 2: malformed JSON", "line 4: record exceeds 64 MiB and was skipped", "skipped 3 unsupported queue records"} {
+		if !WarningMayHaveSkippedRecords(warning) {
+			t.Fatalf("expected skipped-record warning: %q", warning)
+		}
+	}
+	for _, notice := range []string{"preserved 8 unsupported future records", "skipped 2 sidechain records in a main transcript"} {
+		if WarningMayHaveSkippedRecords(notice) {
+			t.Fatalf("expected compatibility notice: %q", notice)
+		}
 	}
 }
 

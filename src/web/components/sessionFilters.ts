@@ -1,6 +1,9 @@
 /** @module SessionFilters @description Pure conversation filtering for the responsive session rail. */
 import type {Session} from "../types";
 
+export type SessionActor="user"|"agent"|"review";
+export type SessionActorFilter=SessionActor|"all";
+
 export type SessionFilters={
   query:string;
   /** A source ID, "chat" for every exported chat product, or "" for all. */
@@ -11,8 +14,17 @@ export type SessionFilters={
   highTokens:boolean;
   failures:boolean;
   findings:boolean;
-  internal:boolean;
+  actor:SessionActorFilter;
 };
+
+/** Classifies the session that owns the transcript, not messages inside it. */
+export function sessionActor(session:Session):SessionActor{
+  const thread=(session.thread_source||"").toLowerCase();
+  const surface=(session.surface||"").toLowerCase();
+  if(session.session_kind==="internal_review"||thread==="guardian_review")return "review";
+  if(thread==="subagent"||surface==="subagent")return "agent";
+  return "user";
+}
 
 export function filterSessions(sessions:Session[],filters:SessionFilters):Session[]{
   const normalizedQuery=filters.query.trim().toLowerCase();
@@ -21,7 +33,7 @@ export function filterSessions(sessions:Session[],filters:SessionFilters):Sessio
     const source=session.source||"codex";
     const searchable=`${session.title} ${session.repo_display_name??""}`.toLowerCase();
 
-    if(!filters.internal&&session.session_kind==="internal_review")return false;
+    if(filters.actor!=="all"&&sessionActor(session)!==filters.actor)return false;
     if(filters.source==="chat"){if(source!=="chatgpt"&&source!=="claude")return false}
     else if(filters.source&&source!==filters.source)return false;
     if(normalizedQuery&&!searchable.includes(normalizedQuery))return false;

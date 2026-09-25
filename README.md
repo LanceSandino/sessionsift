@@ -169,6 +169,15 @@ lists page explicitly and tool responses stay bounded and redacted. See the
 [MCP connection guide](docs/mcp-connection-guide.md) for local and scoped remote
 clients.
 
+## Personal optimization loop
+
+Open **Optimize** to turn deterministic recommendations into local experiments.
+Choose a baseline session, attach a later follow-up, and inspect observed metric
+deltas without a score or declared winner. Recommendation state, experiments,
+and content-free adoption counters persist in the local SQLite database. Weekly
+reports download as privacy-safe Markdown or JSON; see
+[docs/optimization-loop.md](docs/optimization-loop.md).
+
 ## Remote support and collaboration
 
 Connections work like remote-support tools: **the machine with the sessions
@@ -261,12 +270,21 @@ Screens use History API navigation and deep links such as `/sessions/<id>`,
 supported.
 
 The Analytics screen aggregates session, token, cache, tool, source, model,
-repository, failure, and deterministic finding signals. It intentionally omits
-prompt text, response text, tool arguments, and tool results.
+repository, failure, and deterministic finding signals. Its coverage card
+shows the complete stored-record inventory and identifies internal auto-review
+and telemetry-only records intentionally excluded from the aggregates, so the
+Analytics total is never mistaken for an import total. Parser health separates
+non-fatal compatibility notices from warning groups that may contain skipped
+source records. Analytics intentionally omits prompt text, response text, tool
+arguments, and tool results.
 
-Codex guardian/auto-review transcripts are imported for completeness but are
-classified as internal reviews and hidden from normal session lists. Enable the
-**Internal reviews** filter when auditing those records.
+The session library separates transcript owners with a permanent **Started by**
+filter. **You** is the default and contains top-level conversations; **Agents**
+contains separately spawned Codex and Claude Code subagent transcripts;
+**Reviews** contains guardian and auto-review work; and **All** combines them.
+Small `you`, `agent`, and `review` badges keep the origin visible while browsing.
+Assistant replies inside a top-level conversation remain part of that user-started
+conversation—the filter classifies the transcript owner, not each message author.
 
 ## Privacy model
 
@@ -310,7 +328,7 @@ The test command enforces coverage floors and builds the embedded frontend.
 ## Structure
 
 - `src/cmd/sessionsift`: CLI entrypoint
-- `src/internal`: collector, parser, storage, analyzers, and HTTP API
+- `src/internal`: collector, parser, storage, analyzers, optimization loop, and HTTP API
 - `src/internal/mcp`: local and HTTP MCP protocol adapter
 - `src/internal/remote`: device identity, pairing, grants, support codes, bridge runtime, and collaboration
 - `src/internal/claude`: Claude Code discovery and transcript adapter, Claude.ai export adapter
@@ -322,7 +340,7 @@ The test command enforces coverage floors and builds the embedded frontend.
 ## API
 
 The localhost API exposes session lists, session details, turns, events,
-findings, metrics, comparisons, and privacy-safe analytics below `/api/v1`. Session lists exclude
+findings, metrics, comparisons, privacy-safe analytics, and the local optimization loop below `/api/v1`. Session lists exclude
 internal reviews by default; pass `include_internal=true` to include them. Hook
 ingestion is available at `/internal/hooks/codex` and `/internal/hooks/claude`, OTLP logs at `/v1/logs`, OTLP
 metrics at `/v1/metrics`, `/healthz` reports process liveness, and `/readyz`

@@ -14,7 +14,8 @@
     "src/web/supportState.ts",
     "src/web/sessionEvidence.ts",
     "src/web/reviewState.ts",
-    "src/web/libraryGroups.ts"
+    "src/web/libraryGroups.ts",
+    "src/web/optimization.ts"
   ],
   "ignorePatterns": [
     "/.cache",

@@ -74,9 +74,22 @@ type Recommendation struct {
 	Evidence   []string `json:"evidence"`
 }
 
+// Inventory explains which local records contribute to Analytics and why the
+// stored-record total can be larger than the analyzed-conversation total.
+type Inventory struct {
+	StoredRecords         int `json:"stored_records"`
+	IncludedSessions      int `json:"included_sessions"`
+	InternalReviewRecords int `json:"internal_review_records"`
+	TelemetryOnlyRecords  int `json:"telemetry_only_records"`
+	ParserWarningSessions int `json:"parser_warning_sessions"`
+	ParserWarnings        int `json:"parser_warnings"`
+	SkippedRecordWarnings int `json:"skipped_record_warnings"`
+}
+
 // Report is the complete local analytics response.
 type Report struct {
 	Summary         Summary            `json:"summary"`
+	Inventory       Inventory          `json:"inventory"`
 	Daily           []Daily            `json:"daily"`
 	Sources         []Breakdown        `json:"sources"`
 	Models          []Breakdown        `json:"models"`
@@ -102,10 +115,26 @@ func Build(sessions []domain.Session) Report {
 	findings := map[string]*findingState{}
 	activeRanges := [][2]time.Time{}
 
+	report.Inventory.StoredRecords = len(sessions)
 	for _, session := range sessions {
+		if len(session.Warnings) > 0 {
+			report.Inventory.ParserWarningSessions++
+		}
+		for _, warning := range session.Warnings {
+			report.Inventory.ParserWarnings++
+			if WarningMayHaveSkippedRecords(warning) {
+				report.Inventory.SkippedRecordWarnings++
+			}
+		}
 		if session.Kind == domain.InternalReviewSession {
+			report.Inventory.InternalReviewRecords++
 			continue
 		}
+		if telemetryOnly(session) {
+			report.Inventory.TelemetryOnlyRecords++
+			continue
+		}
+		report.Inventory.IncludedSessions++
 		metrics := domain.CalculateMetrics(session)
 		report.Summary.Sessions++
 		report.Summary.Turns += metrics.TurnCount
@@ -197,6 +226,21 @@ func Build(sessions []domain.Session) Report {
 	})
 	report.Recommendations = recommend(report)
 	return report
+}
+
+func telemetryOnly(session domain.Session) bool {
+	empty := len(session.Turns) == 0 && len(session.ToolCalls) == 0
+	placeholder := session.Title == "Live Codex session" || (session.Source == domain.SourceCodex && session.Status == "live")
+	return empty && placeholder
+}
+
+// WarningMayHaveSkippedRecords separates lossy parser warnings from
+// compatibility notices where the unfamiliar record was preserved inertly.
+func WarningMayHaveSkippedRecords(warning string) bool {
+	warning = strings.ToLower(strings.TrimSpace(warning))
+	return strings.Contains(warning, "malformed json") ||
+		strings.Contains(warning, "record exceeds") ||
+		(strings.HasPrefix(warning, "skipped ") && strings.Contains(warning, " unsupported "))
 }
 
 func mergedDuration(ranges [][2]time.Time) int64 {

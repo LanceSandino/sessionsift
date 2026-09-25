@@ -229,7 +229,7 @@ func (s *Service) analytics(ctx context.Context) (analytics.Report, error) {
 	if err != nil {
 		return analytics.Report{}, err
 	}
-	return analytics.Build(conversationSessions(sessions)), nil
+	return analytics.Build(sessions), nil
 }
 
 func (s *Service) list(ctx context.Context, arguments ListArguments) (any, protocol.Status, error) {

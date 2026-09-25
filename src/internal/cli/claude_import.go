@@ -112,7 +112,7 @@ func rememberedPath(file, environment string) string {
 func claudeDoctor(paths config.Paths, claudeCodeCount, claudeCount int) string {
 	home, err := claudediscover.Home()
 	transcripts := "not found\t!"
-	hooks := "not configured (optional)\t!"
+	hooks := "not configured (optional)\t–"
 	if err == nil {
 		if sources, scanErr := claudediscover.Sessions(home); scanErr == nil && len(sources) > 0 {
 			transcripts = fmt.Sprintf("%d found\t✓", len(sources))
@@ -121,7 +121,7 @@ func claudeDoctor(paths config.Paths, claudeCodeCount, claudeCount int) string {
 			hooks = "configured\t✓"
 		}
 	}
-	export := "not configured\t!"
+	export := "not configured (optional)\t–"
 	if path := rememberedPath(paths.ClaudeExport, "SESSIONSIFT_CLAUDE_EXPORT"); path != "" {
 		if _, statErr := os.Stat(path); statErr == nil {
 			export = "watching " + filepath.Base(path) + "\t✓"
@@ -129,5 +129,5 @@ func claudeDoctor(paths config.Paths, claudeCodeCount, claudeCount int) string {
 			export = "configured path missing\t!"
 		}
 	}
-	return fmt.Sprintf("Claude Code      %s\nClaude sessions  %d imported\nClaude hooks     %s\nClaude.ai source %s\nClaude.ai chats  %d imported\n", transcripts, claudeCodeCount, hooks, export, claudeCount)
+	return fmt.Sprintf("Claude Code\n  Session files    %s\n  Database records %d\n  Hooks            %s\n\nClaude.ai\n  Export           %s\n  Database records %d\n", transcripts, claudeCodeCount, hooks, export, claudeCount)
 }

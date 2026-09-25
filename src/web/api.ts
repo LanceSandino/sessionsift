@@ -1,5 +1,5 @@
 /** @module ApiClient @description Fetches local-only SessionSift JSON resources. */
-import type { AnalyticsReport, BridgeStatus, ComparePayload, DiagnosticsStatus, HostedInvitation, LinkOffer, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
+import type { AnalyticsReport, BridgeStatus, ComparePayload, DiagnosticsStatus, HostedInvitation, LinkOffer, OptimizationExperiment, OptimizationOverview, RecommendationState, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
 
 async function request<T>(path:string):Promise<T>{
   const response=await fetch(path,{headers:{Accept:"application/json"}});
@@ -17,6 +17,11 @@ export const api={
   session:(id:string)=>request<Session>(`/api/v1/sessions/${encodeURIComponent(id)}`),
   compare:(a:string,b:string)=>request<ComparePayload>(`/api/v1/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
   analytics:()=>request<AnalyticsReport>("/api/v1/analytics"),
+  optimization:()=>request<OptimizationOverview>("/api/v1/optimization"),
+  createExperiment:(value:{title:string;hypothesis?:string;recommendation_id?:string;baseline_session_id:string;followup_session_id?:string})=>send<OptimizationExperiment>("/api/v1/optimization/experiments",value),
+  updateExperiment:(value:{id:string;title:string;hypothesis?:string;recommendation_id?:string;baseline_session_id:string;followup_session_id?:string})=>send<OptimizationExperiment>("/api/v1/optimization/experiments/update",value),
+  setRecommendation:(recommendation_id:string,state:RecommendationState)=>send("/api/v1/optimization/recommendations",{recommendation_id,state}),
+  recordAdoption:(event:"optimize_viewed")=>send("/api/v1/optimization/adoption",{event}),
   diagnostics:()=>request<DiagnosticsStatus>("/api/v1/diagnostics"),
   remoteStatus:()=>request<RemoteStatus>("/api/v1/remote/status"),
   bridge:()=>request<BridgeStatus>("/api/v1/remote/bridge"),

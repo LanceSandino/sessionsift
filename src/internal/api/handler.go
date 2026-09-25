@@ -68,6 +68,8 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 			compare(agent, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/analytics":
 			analyticsReport(agent, w, r)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/optimization"):
+			optimizationRoute(store, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/diagnostics":
 			diagnosticsReport(store, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/protocol":

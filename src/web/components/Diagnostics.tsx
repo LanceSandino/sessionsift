@@ -40,7 +40,7 @@ export function Diagnostics({sessions,status,statusError}:{sessions:Session[];st
     {label:"ChatGPT conversations",value:bySource("chatgpt").length,detail:"Import an export with sessionsift import-chatgpt",state:bySource("chatgpt").length?"ok":"optional"},
     {label:"Claude.ai conversations",value:bySource("claude").length,detail:"Import an export with sessionsift import-claude",state:bySource("claude").length?"ok":"optional"},
     {label:"Internal reviews",value:internal,detail:"Guardian and auto-review work retained for audit, hidden from the library by default",state:"ok"},
-    {label:"Parser warnings",value:warnings,detail:"Unsupported records are preserved instead of silently discarded",state:warnings?"attention":"ok"},
+    {label:"Parser notices",value:warnings,detail:"Non-fatal compatibility notices. Run sessionsift doctor to distinguish preserved records from warning groups that may include skipped data.",state:warnings?"attention":"ok"},
   ];
   const coverage=[
     {title:"Conversation",body:"Prompts, assistant summaries, checkpoints, steering or queued messages, and exact start and end times."},

@@ -16,9 +16,11 @@ function Bars({title,items,total,label}:{title:string;items:AnalyticsBreakdown[]
 
 export function Analytics({report}:{report:AnalyticsReport}){
   const {summary}=report;
+  const inventory=report.inventory||{stored_records:summary.sessions,included_sessions:summary.sessions,internal_review_records:0,telemetry_only_records:0,parser_warning_sessions:0,parser_warnings:0,skipped_record_warnings:0};
   const dailyMax=Math.max(1,...report.daily.map(day=>day.input_tokens));
   return <div className="content-page" aria-label="Analytics">
     <div className="page-intro"><span className="eyebrow">Across your local library</span><h2>The pattern, not the transcript.</h2><p>{plural(summary.sessions,"session")} from {report.sources.length} source{report.sources.length===1?"":"s"}. Aggregates only—no conversation text, tool arguments or tool results enter this report.</p></div>
+    <section className="aggregate-panel analytics-inventory" aria-label="Analytics coverage"><h3>What these totals include</h3><p>{inventory.included_sessions.toLocaleString()} analyzed conversations from {inventory.stored_records.toLocaleString()} stored records. {inventory.internal_review_records.toLocaleString()} internal auto-review{inventory.internal_review_records===1?"":"s"} and {inventory.telemetry_only_records.toLocaleString()} telemetry-only placeholder{inventory.telemetry_only_records===1?"":"s"} are intentionally excluded.</p><p className="small muted">{inventory.parser_warnings.toLocaleString()} parser notice{inventory.parser_warnings===1?"":"s"} across {inventory.parser_warning_sessions.toLocaleString()} session{inventory.parser_warning_sessions===1?"":"s"}; {inventory.skipped_record_warnings.toLocaleString()} may include skipped records. Other notices are non-fatal compatibility or informational conditions; source transcripts remain untouched.</p></section>
     <div className="summary-metrics" aria-label="Analytics summary">
       <div className="metric"><span className="label">Sessions</span><strong>{summary.sessions}</strong><small>{summary.turns} prompts</small></div>
       <div className="metric"><span className="label">Active work</span><strong>{duration(summary.duration_ms)}</strong><small>overlapping prompt time counted once</small></div>

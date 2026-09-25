@@ -246,7 +246,7 @@ func TestHostedPagesUseLayeredSiftAndBoundedControlCenters(t *testing.T) {
 	request.Header.Set("Cf-Access-Jwt-Assertion", "valid")
 	root := httptest.NewRecorder()
 	handler.ServeHTTP(root, request)
-	for _, marker := range []string{`data-mark="layered-sift"`, "Connection control center", "Authorized sessions", "overflow:hidden", "/api/v1/mcp-target", "session.list", "session.get"} {
+	for _, marker := range []string{`data-mark="layered-sift"`, "Connection control center", "Sessions on selected device", "Device used by Sessions &amp; MCP", "Use this device for Sessions &amp; MCP", "changes both the hosted Sessions view and MCP routing", "overflow:hidden", "/api/v1/mcp-target", "session.list", "session.get"} {
 		if !strings.Contains(root.Body.String(), marker) {
 			t.Fatalf("hosted control center missing %q", marker)
 		}

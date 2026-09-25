@@ -104,11 +104,16 @@ func TestSetupEnableInstallsCurrentBinary(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"status":"ok"}`))}, nil
 	}
 	t.Cleanup(func() { getCollectorHealth = oldCollectorHealth })
-	if code := Run(context.Background(), []string{"doctor"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "OTel logs       configured\t✓") || !strings.Contains(out.String(), "OTel metrics    configured\t✓") {
+	if code := Run(context.Background(), []string{"doctor"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Codex\n") || !strings.Contains(out.String(), "  Hooks            configured\t✓") || !strings.Contains(out.String(), "  OTel logs        configured\t✓") || !strings.Contains(out.String(), "  OTel metrics     configured\t✓") {
 		t.Fatalf("doctor code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
-	if !strings.Contains(out.String(), "Collector        running\t✓") {
+	if !strings.Contains(out.String(), "  OTel collector   running\t✓") {
 		t.Fatalf("doctor did not use liveness probe: %s", out.String())
+	}
+	for _, ambiguous := range []string{"\nSessions        ", "\nHistory         ", "\nHook capture    ", "\nCollector       "} {
+		if strings.Contains(out.String(), ambiguous) {
+			t.Fatalf("doctor retained ambiguous row %q: %s", ambiguous, out.String())
+		}
 	}
 }
 

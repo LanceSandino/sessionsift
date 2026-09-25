@@ -65,11 +65,11 @@ describe("session library",()=>{
     expect(list.queryByText("Chat conversation")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button",{name:"Codex"}));
     expect(list.getByText("Alpha session")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button",{name:"All"}));
+    fireEvent.click(within(screen.getByRole("group",{name:"Filter by source"})).getByRole("button",{name:"All"}));
     expect(list.getAllByRole("listitem")).toHaveLength(3);
   });
 
-  it("opens detailed filters for repository, model, date, metrics and internal reviews",()=>{
+  it("opens detailed filters for provenance, repository, model, date and metrics",()=>{
     const high={...metrics,input_tokens:120000,failed_tool_calls:2,finding_count:1};
     const internal:Session={...second,id:"review",title:"Auto-review approval assessment",session_kind:"internal_review",metrics:high};
     library([first,second,internal]);
@@ -79,9 +79,10 @@ describe("session library",()=>{
     fireEvent.click(toggle);
     expect(screen.getByRole("button",{name:"Hide filters"})).toHaveAttribute("aria-expanded","true");
     expect(list.queryByText("Auto-review approval assessment")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("Internal reviews"));
+    expect(screen.getByRole("button",{name:"You"})).toHaveAttribute("aria-pressed","true");
+    fireEvent.click(screen.getByRole("button",{name:"Reviews"}));
     expect(list.getByText("Auto-review approval assessment")).toBeInTheDocument();
-    expect(list.getByText("internal review")).toBeInTheDocument();
+    expect(list.getByText("review")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Repository filter"),{target:{value:"repo-a"}});
     expect(list.queryByText("Beta session")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Repository filter"),{target:{value:""}});
@@ -95,7 +96,26 @@ describe("session library",()=>{
     expect(list.getAllByRole("listitem")).toHaveLength(1);
     expect(list.getByText("2 failed")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Source filter"),{target:{value:"claude"}});
-    expect(screen.getByRole("button",{name:/Hide filters/})).toHaveTextContent("5");
+    expect(screen.getByRole("button",{name:/Hide filters/})).toHaveTextContent("4");
+  });
+
+  it("separates sessions started by the user, delegated agents and internal reviews",()=>{
+    const agent:Session={...second,id:"agent",title:"Claude Code subagent",source:"claude_code",thread_source:"subagent",surface:"subagent"};
+    const review:Session={...second,id:"review",title:"Auto-review approval assessment",session_kind:"internal_review",thread_source:"guardian_review"};
+    library([first,agent,review]);
+    const list=within(screen.getByRole("list",{name:"Sessions"}));
+    expect(list.getByText("Alpha session")).toBeInTheDocument();
+    expect(list.getByText("you")).toBeInTheDocument();
+    expect(list.queryByText("Claude Code subagent")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Agents"}));
+    expect(list.getByText("Claude Code subagent")).toBeInTheDocument();
+    expect(list.getByText("agent")).toBeInTheDocument();
+    expect(list.queryByText("Alpha session")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Reviews"}));
+    expect(list.getByText("Auto-review approval assessment")).toBeInTheDocument();
+    expect(list.getByText("review")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("group",{name:"Filter by starter"})).getByRole("button",{name:"All"}));
+    expect(list.getAllByRole("listitem")).toHaveLength(3);
   });
 
   it("groups by recency and routes drawer, page and import actions",()=>{

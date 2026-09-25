@@ -280,12 +280,12 @@ func TestParseFileHashesInputAndReportsErrors(t *testing.T) {
 	if _, _, err := New().ParseFile(filepath.Join(t.TempDir(), "missing.jsonl"), false); err == nil {
 		t.Fatal("expected open error")
 	}
-	oversized := filepath.Join(t.TempDir(), "huge.jsonl")
-	if err := os.WriteFile(oversized, []byte(`{"type":"user","x":"`+strings.Repeat("a", 17*1024*1024)+`"}`), 0o600); err != nil {
+	large := filepath.Join(t.TempDir(), "large.jsonl")
+	if err := os.WriteFile(large, []byte(`{"type":"user","x":"`+strings.Repeat("a", 17*1024*1024)+`"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := New().ParseFile(oversized, false); err == nil {
-		t.Fatal("expected a scanner error for an oversized line")
+	if _, _, err := New().ParseFile(large, false); err != nil {
+		t.Fatalf("large transcript record was rejected: %v", err)
 	}
 }
 
