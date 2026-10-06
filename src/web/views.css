@@ -81,6 +81,14 @@ tr.clickable:focus-visible{outline-offset:-2px}
 td .cell-sub{display:block;font-size:10px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
 td.num,th.num{text-align:right;font-family:var(--mono)}
 .summary-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:18px 0 25px}
+.activity-overview{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;border:1px solid var(--line);border-radius:6px;background:var(--line);overflow:hidden;margin:0 0 24px}
+.activity-overview>div{background:var(--paper);padding:11px 13px;min-width:0}
+.activity-overview .label,.activity-overview small{display:block;font-size:9px;color:var(--muted)}
+.activity-overview strong{display:block;font-size:13px;font-weight:600;margin:4px 0;overflow-wrap:anywhere}
+.activity-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.activity-badge{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:1px 6px;font-size:8px;line-height:1.5;color:var(--muted);background:var(--soft);white-space:nowrap}
+.activity-badge.protocol{color:var(--accent);background:var(--accent-soft);border-color:transparent}
+.activity-badge.blueprint,.activity-badge.memory{color:var(--amber);background:var(--amber-soft);border-color:transparent}
 .metric{border-bottom:1px solid var(--line);padding:10px 0 16px;min-width:0}
 .metric .label{font-size:10px;color:var(--muted)}
 .metric strong{font-size:28px;font-weight:550;letter-spacing:-1px;display:block;margin:6px 0 2px;line-height:1.2;overflow-wrap:anywhere}

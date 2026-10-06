@@ -52,7 +52,7 @@ export function SessionNavigator({sessions,selected,page,now,searchRef,onSelect,
       <button type="button" className="icon-btn view-close" aria-label="Close session library" onClick={onClose}><Icon name="x"/></button>
     </div>
     <nav className="mobile-nav" aria-label="Workspace pages">
-      {[...destinations,{page:"diagnostics" as Page,label:"Diagnostics",icon:"health" as const,href:"/diagnostics"}].map(item=><button type="button" key={item.page} className={page===item.page?"active":""} aria-current={page===item.page?"page":undefined} onClick={()=>onPage(item.page)}><Icon name={item.icon}/>{item.label}</button>)}
+      {[...destinations,{page:"changelog" as Page,label:"Changelog",icon:"file" as const,href:"/changelog"},{page:"diagnostics" as Page,label:"Diagnostics",icon:"health" as const,href:"/diagnostics"}].map(item=><button type="button" key={item.page} className={page===item.page?"active":""} aria-current={page===item.page?"page":undefined} onClick={()=>onPage(item.page)}><Icon name={item.icon}/>{item.label}</button>)}
     </nav>
     <div className="library-head">
       <div className="row between"><span className="eyebrow">Sessions <span className="mono muted" aria-label={`${filtered.length} shown`}>{String(filtered.length).padStart(2,"0")}</span></span><span className="row library-tools"><select className="sort-select" aria-label="Sort conversations" value={order} onChange={event=>setOrder(event.target.value as SessionSortOrder)}>{sortOrders.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select><button type="button" className="icon-btn" aria-label="Import conversations" title="Import conversations" onClick={onImport}><Icon name="plus"/></button></span></div>

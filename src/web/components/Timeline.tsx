@@ -7,6 +7,7 @@ import {observedUsageDelta,usageDeltaLabel} from "../usageMetrics";
 import {scrollToCheckpoint} from "../useLatestScroll";
 import type {Evidence,WorkspaceActions} from "../workspace";
 import {Icon,type IconName} from "./Icon";
+import {ActivityBadges} from "./ActivityBadges";
 import {buildTimelineJourney,journeyEntries,type JourneyCheckpoint,type JourneyFilter} from "./timelineJourney";
 import {latestWindow} from "./timelineWindow";
 
@@ -71,7 +72,7 @@ function CallRow({call,selected,onSelect}:{call:ToolCall;selected:boolean;onSele
   const status=callStatus(call);
   return <button type="button" className={`timeline-event ${call.success?"":"failed"}`} aria-current={selected?"true":undefined} onClick={()=>onSelect({kind:"tool",id:call.id})}>
     <time>{clockTime(call.timestamp)}</time><Icon name={call.success?phaseIcons[phaseOf(call)||""]||"tool":"warning"}/>
-    <div className="grow"><strong>{callLabel(call)}</strong><small>{call.tool_name} · {transportLabel(call)}{call.tool_server?` · ${call.tool_server}`:""}</small></div>
+    <div className="grow"><strong>{callLabel(call)}</strong><small>{call.tool_name} · {transportLabel(call)}{call.tool_server?` · ${call.tool_server}`:""}</small><ActivityBadges call={call} compact/></div>
     <span className={`badge ${status==="Failed"?"warn":status==="Passed"?"good":""}`}>{status}</span>
   </button>;
 }

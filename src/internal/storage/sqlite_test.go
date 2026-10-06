@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -81,6 +82,37 @@ func TestHealthIsNotStarvedByActiveIngestionConnection(t *testing.T) {
 	if err = store.Health(ctx); err != nil {
 		t.Fatalf("readiness was starved by active connection: %v", err)
 	}
+}
+
+func TestHealthReturnsCachedDeepCheckWhileRefreshingInBackground(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sessionsift.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	original := quickCheckDatabase
+	quickCheckDatabase = func(context.Context, *sql.DB) error {
+		close(started)
+		<-release
+		return nil
+	}
+	t.Cleanup(func() { quickCheckDatabase = original })
+	store.healthMu.Lock()
+	store.healthCheckedAt = time.Now().Add(-2 * healthCheckInterval)
+	store.healthMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err = store.Health(ctx); err != nil {
+		t.Fatalf("cached readiness failed: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("deep health refresh did not start")
+	}
+	close(release)
 }
 
 func TestCaptureStatsReportsOnlySourceCountsAndRecency(t *testing.T) {

@@ -21,6 +21,7 @@ export function AppRail({page,theme,onPage,onTheme}:{page:Page;theme:Theme;onPag
       {destinations.map(item=><a key={item.page} href={item.href} className={`icon-btn ${page===item.page?"active":""}`} aria-label={item.label} title={item.hint||item.label} aria-current={page===item.page?"page":undefined} onClick={event=>go(event,item.page)}><Icon name={item.icon}/></a>)}
     </div>
     <div className="rail-bottom">
+      <a href="/changelog" className={`icon-btn ${page==="changelog"?"active":""}`} aria-label="Changelog" title="Changelog · semantic release history" aria-current={page==="changelog"?"page":undefined} onClick={event=>go(event,"changelog")}><Icon name="file"/></a>
       <a href="/diagnostics" className={`icon-btn ${page==="diagnostics"?"active":""}`} aria-label="Diagnostics" title="Diagnostics · capture activity and available data" aria-current={page==="diagnostics"?"page":undefined} onClick={event=>go(event,"diagnostics")}><Icon name="health"/></a>
       <button type="button" className="icon-btn" aria-label={theme==="dark"?"Use light theme":"Use dark theme"} title="Toggle theme" onClick={onTheme}><Icon name={theme==="dark"?"sun":"moon"}/></button>
       <span className="avatar" title="Local owner · this device"><Icon name="user"/></span>

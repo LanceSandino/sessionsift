@@ -27,7 +27,7 @@ import (
 
 func TestVersionSetupAndUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "0.1.0") {
+	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "2.0.0") {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 	out.Reset()
@@ -78,6 +78,29 @@ func TestVersionSetupAndUsage(t *testing.T) {
 	}
 	if code := Run(context.Background(), nil, strings.NewReader(""), &out, &errOut); code != 2 {
 		t.Fatalf("usage code=%d", code)
+	}
+}
+
+func TestContainerHealthcheckTargetsAgentAndBridgeReadiness(t *testing.T) {
+	original := healthHTTPClient
+	healthHTTPClient = &http.Client{Transport: cliRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/readyz" {
+			t.Fatalf("path = %s", request.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"status":"ready"}`))}, nil
+	})}
+	t.Cleanup(func() { healthHTTPClient = original })
+	t.Setenv("SESSIONSIFT_ADDR", "0.0.0.0:7777")
+	t.Setenv("SESSIONSIFT_BRIDGE_ADDR", "0.0.0.0:7780")
+	for _, target := range []string{"agent", "bridge"} {
+		var out, errOut bytes.Buffer
+		if code := Run(context.Background(), []string{"healthcheck", target}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "ready") {
+			t.Fatalf("target=%s code=%d out=%s err=%s", target, code, out.String(), errOut.String())
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"healthcheck", "unknown"}, strings.NewReader(""), &out, &errOut); code != 2 {
+		t.Fatalf("unknown target code=%d", code)
 	}
 }
 
@@ -359,6 +382,25 @@ func TestDockerTunnelListenerRejectsNonLocalNetworkClients(t *testing.T) {
 	if remote.Code != http.StatusForbidden || called {
 		t.Fatalf("remote status=%d called=%v", remote.Code, called)
 	}
+
+	t.Setenv("SESSIONSIFT_TRUSTED_PROXY_IP", "172.30.77.1")
+	called = false
+	forwarded := httptest.NewRecorder()
+	forwardedRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	forwardedRequest.RemoteAddr = "172.30.77.1:41234"
+	handler.ServeHTTP(forwarded, forwardedRequest)
+	if forwarded.Code != http.StatusNoContent || !called {
+		t.Fatalf("trusted proxy status=%d called=%v", forwarded.Code, called)
+	}
+
+	called = false
+	neighbor := httptest.NewRecorder()
+	neighborRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	neighborRequest.RemoteAddr = "172.30.77.2:41234"
+	handler.ServeHTTP(neighbor, neighborRequest)
+	if neighbor.Code != http.StatusForbidden || called {
+		t.Fatalf("neighbor status=%d called=%v", neighbor.Code, called)
+	}
 }
 
 func TestChatGPTSourceHelpers(t *testing.T) {
@@ -588,12 +630,22 @@ func TestStartStatusAndStopErrors(t *testing.T) {
 	t.Setenv("SESSIONSIFT_HOME", state)
 	t.Setenv("CODEX_HOME", codex)
 	t.Setenv("SESSIONSIFT_CHATGPT_EXPORT", chatExport)
+	spool := filepath.Join(state, "raw", "events", "codex-start.json")
+	if err := os.MkdirAll(filepath.Dir(spool), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(spool, []byte(`{"session_id":"startup-spool"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var out, errOut bytes.Buffer
 	oldListen := listenTCP
 	listenTCP = func(string, string) (net.Listener, error) { return nil, errors.New("bind failed") }
 	t.Cleanup(func() { listenTCP = oldListen })
 	if code := Run(context.Background(), []string{"start"}, strings.NewReader(""), &out, &errOut); code != 1 {
 		t.Fatalf("start code=%d", code)
+	}
+	if _, err := os.Stat(spool); err != nil {
+		t.Fatalf("startup replayed spool before proving it could bind the listener: %v", err)
 	}
 	store, openErr := storage.Open(filepath.Join(state, "sessionsift.db"))
 	if openErr != nil {

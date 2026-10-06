@@ -1,5 +1,5 @@
 /** @module ApiClient @description Fetches local-only SessionSift JSON resources. */
-import type { AnalyticsReport, BridgeStatus, ComparePayload, DiagnosticsStatus, HostedInvitation, LinkOffer, OptimizationExperiment, OptimizationOverview, RecommendationState, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
+import type { AnalyticsReport, BridgeStatus, ChangelogPage, ComparePayload, DiagnosticsStatus, HostedInvitation, LinkOffer, OptimizationExperiment, OptimizationOverview, RecommendationState, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
 
 async function request<T>(path:string):Promise<T>{
   const response=await fetch(path,{headers:{Accept:"application/json"}});
@@ -23,6 +23,7 @@ export const api={
   setRecommendation:(recommendation_id:string,state:RecommendationState)=>send("/api/v1/optimization/recommendations",{recommendation_id,state}),
   recordAdoption:(event:"optimize_viewed")=>send("/api/v1/optimization/adoption",{event}),
   diagnostics:()=>request<DiagnosticsStatus>("/api/v1/diagnostics"),
+  changelog:(page=1,pageSize=5)=>request<ChangelogPage>(`/api/v1/changelog?page=${page}&page_size=${pageSize}`),
   remoteStatus:()=>request<RemoteStatus>("/api/v1/remote/status"),
   bridge:()=>request<BridgeStatus>("/api/v1/remote/bridge"),
   connectBridge:(url:string,name:string)=>send<BridgeStatus>("/api/v1/remote/bridge/connect",{url,name}),

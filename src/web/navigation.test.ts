@@ -18,6 +18,7 @@ describe("navigation",()=>{
     expect(readRoute("/remote-access")).toEqual({page:"connections"});
     expect(readRoute("/remote-review")).toEqual({page:"connections"});
     expect(readRoute("/diagnostics")).toEqual({page:"diagnostics"});
+    expect(readRoute("/changelog")).toEqual({page:"changelog"});
     expect(readRoute("/nope")).toEqual({page:"sessions"});
   });
 
@@ -28,6 +29,7 @@ describe("navigation",()=>{
     expect(routePath({page:"sessions",sessionId:"a",view:"review"})).toBe("/sessions/a/review");
     expect(routePath({page:"connections"})).toBe("/connections");
     expect(routePath({page:"optimize"})).toBe("/optimize");
+    expect(routePath({page:"changelog"})).toBe("/changelog");
     const length=window.history.length;
     pushRoute({page:"analytics"});
     expect(window.location.pathname).toBe("/analytics");

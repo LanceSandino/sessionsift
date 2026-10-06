@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
@@ -20,9 +21,26 @@ import (
 
 // Store wraps the local SQLite database.
 type Store struct {
-	db       *sql.DB
-	healthDB *sql.DB
-	readDB   *sql.DB
+	db               *sql.DB
+	healthDB         *sql.DB
+	readDB           *sql.DB
+	healthMu         sync.Mutex
+	healthCheckedAt  time.Time
+	healthErr        error
+	healthRefreshing bool
+}
+
+const healthCheckInterval = 5 * time.Minute
+
+var quickCheckDatabase = func(ctx context.Context, db *sql.DB) error {
+	var result string
+	if err := db.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&result); err != nil {
+		return fmt.Errorf("database quick check: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("database quick check: %s", result)
+	}
+	return nil
 }
 
 // CaptureStats reports metadata-only ingestion activity for local diagnostics.
@@ -59,6 +77,14 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("open readiness connection: %w", err)
 		}
 		store.healthDB.SetMaxOpenConns(1)
+		healthCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err = quickCheckDatabase(healthCtx, store.healthDB)
+		cancel()
+		if err != nil {
+			store.Close()
+			return nil, err
+		}
+		store.healthCheckedAt = time.Now()
 		store.readDB, err = sql.Open("sqlite", path)
 		if err != nil {
 			store.Close()
@@ -94,14 +120,25 @@ func (s *Store) Health(ctx context.Context) error {
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("database ping: %w", err)
 	}
-	var result string
-	if err := db.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&result); err != nil {
-		return fmt.Errorf("database quick check: %w", err)
+	s.healthMu.Lock()
+	if time.Since(s.healthCheckedAt) >= healthCheckInterval && !s.healthRefreshing {
+		s.healthRefreshing = true
+		go s.refreshHealth(db)
 	}
-	if result != "ok" {
-		return fmt.Errorf("database quick check: %s", result)
-	}
-	return nil
+	err := s.healthErr
+	s.healthMu.Unlock()
+	return err
+}
+
+func (s *Store) refreshHealth(db *sql.DB) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	err := quickCheckDatabase(ctx, db)
+	cancel()
+	s.healthMu.Lock()
+	s.healthCheckedAt = time.Now()
+	s.healthErr = err
+	s.healthRefreshing = false
+	s.healthMu.Unlock()
 }
 
 // CaptureStats returns counts and latest timestamps without exposing event payloads.

@@ -1,0 +1,17 @@
+.git
+.github
+.cache
+.env
+.env.*
+!.env.sessionsift.example
+coverage
+coverage.out
+dist
+node_modules
+reports
+secrets
+tmp
+*.db
+*.db-shm
+*.db-wal
+*.log

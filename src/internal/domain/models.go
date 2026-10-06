@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const ParserVersion = "codex-jsonl-v13"
+const ParserVersion = "codex-jsonl-v14"
 
 const ChatGPTExportVersion = "chatgpt-export-v3"
 

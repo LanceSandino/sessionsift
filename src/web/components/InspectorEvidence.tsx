@@ -6,6 +6,7 @@ import type {Session,ToolCall} from "../types";
 import {observedUsageDelta,usageDeltaLabel} from "../usageMetrics";
 import type {Evidence,WorkspaceActions} from "../workspace";
 import {Icon} from "./Icon";
+import {ActivityBadges} from "./ActivityBadges";
 import {RichContent} from "./RichContent";
 
 type Actions=Pick<WorkspaceActions,"selectEvidence"|"jumpToTurn"|"noteOn">;
@@ -28,6 +29,7 @@ export function InspectorEvidence({session,evidence,canAnnotate,actions}:{sessio
         <div className="row between"><span className="badge">{transportLabel(call)} tool</span><span className={`badge ${status==="Failed"?"warn":status==="Passed"?"good":""}`}>{status}</span></div>
         <h3 className="tool-title">{call.tool_name}</h3>
         <p className="description">{callLabel(call)}</p>
+        <ActivityBadges call={call}/>
         {turn&&<div className="data-row"><span className="key">Prompt checkpoint</span><button type="button" className="text-button" onClick={()=>actions.jumpToTurn(turn.id)}>{twoDigits(turn.sequence)} <Icon name="arrow"/></button></div>}
         <div className="data-row"><span className="key">Category</span><span className="value">{call.tool_category||"other"}</span></div>
         {call.tool_server&&<div className="data-row"><span className="key">Server</span><span className="value">{call.tool_server}</span></div>}

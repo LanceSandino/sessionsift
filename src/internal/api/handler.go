@@ -19,6 +19,7 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/domain"
 	"github.com/LanceSandino/sessionsift/src/internal/hooks"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
+	"github.com/LanceSandino/sessionsift/src/internal/release"
 	"github.com/LanceSandino/sessionsift/src/internal/remote"
 	"github.com/LanceSandino/sessionsift/src/internal/storage"
 	"github.com/LanceSandino/sessionsift/src/webui"
@@ -68,6 +69,8 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 			compare(agent, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/analytics":
 			analyticsReport(agent, w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/changelog":
+			changelogPage(w, r)
 		case strings.HasPrefix(r.URL.Path, "/api/v1/optimization"):
 			optimizationRoute(store, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/diagnostics":
@@ -100,6 +103,29 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
 	}))
+}
+
+func changelogPage(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := 1, 5
+	var err error
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		page, err = strconv.Atoi(raw)
+	}
+	if err == nil {
+		if raw := r.URL.Query().Get("page_size"); raw != "" {
+			pageSize, err = strconv.Atoi(raw)
+		}
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "page and page_size must be integers"})
+		return
+	}
+	result, err := release.Page(page, pageSize)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 type diagnosticsResponse struct {

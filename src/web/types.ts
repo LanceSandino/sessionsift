@@ -35,3 +35,6 @@ export type OptimizationExperiment={id:string;title:string;hypothesis?:string;re
 export type OptimizationRecommendation=AnalyticsRecommendation&{state:RecommendationState};
 export type OptimizationOverview={generated_at:string;period_start:string;summary:{sessions:number;turns:number;tool_calls:number;failed_tool_calls:number;findings:number;running_experiments:number;measured_experiments:number};recommendations:OptimizationRecommendation[];experiments:OptimizationExperiment[];adoption:{active_days:number;optimize_views:number;experiments_created:number;recommendations_changed:number;reports_exported:number};privacy:string[]};
 export type DiagnosticsStatus={collector_running:boolean;otel_active:boolean;otel_events:number;latest_otel_event_at?:string;hook_active:boolean;hook_events:number;latest_hook_event_at?:string;claude_hook_active?:boolean;claude_hook_events?:number;latest_claude_hook_event_at?:string;metrics_receiver:"acknowledge_only"};
+export type ReleaseChange={category:string;items:string[]};
+export type Release={version:string;date:string;title:string;changes:ReleaseChange[]};
+export type ChangelogPage={current_version:string;page:number;page_size:number;total:number;total_pages:number;has_previous:boolean;has_next:boolean;releases:Release[]};

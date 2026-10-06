@@ -176,6 +176,25 @@ describe("timeline lens",()=>{
 });
 
 describe("tools lens",()=>{
+  it("calls out named protocols plus Blueprint, memory and file reads from observed tool evidence",()=>{
+    const calls:ToolCall[]=[
+      {...readCall,id:"protocol",target_path_display:"protocols/MSP.instructions.md",arguments_redacted:`{"path":"/skills/protocols/MSP.instructions.md"}`},
+      {...readCall,id:"blueprint",target_path_display:"docs/Blueprint.md"},
+      {...readCall,id:"memory",target_path_display:"memories/MEMORY.md"},
+      {...readCall,id:"file",target_path_display:"src/auth.ts"},
+    ];
+    render(<ToolsView session={{...first,tool_calls:calls}} actions={actions()}/>);
+    const summary=screen.getByRole("region",{name:"Observed protocol and file reads"});
+    expect(summary).toHaveTextContent("MSP");
+    expect(summary).toHaveTextContent("1 Blueprint read");
+    expect(summary).toHaveTextContent("1 memory read");
+    expect(summary).toHaveTextContent("4 file reads total");
+    expect(screen.getByRole("row",{name:/Inspect read_file: protocols\/MSP.instructions.md/})).toHaveTextContent("MSP protocol read");
+    expect(screen.getByRole("row",{name:/Inspect read_file: docs\/Blueprint.md/})).toHaveTextContent("Blueprint read");
+    expect(screen.getByRole("row",{name:/Inspect read_file: memories\/MEMORY.md/})).toHaveTextContent("Memory read");
+    expect(screen.getByRole("row",{name:/Inspect read_file: src\/auth.ts/})).toHaveTextContent("File read");
+  });
+
   it("keeps built-in and MCP activity distinct and opens calls by click or keyboard",()=>{
     const acts=actions();
     const session:Session={...workedSession(),tool_calls:[...workedSession().tool_calls!,{id:"m2",turn_id:"t2",timestamp:"2026-01-01T00:03:20Z",tool_name:"mcp__github__create_pull_request",tool_category:"other",tool_transport:"mcp",tool_server:"github",success:false}]};

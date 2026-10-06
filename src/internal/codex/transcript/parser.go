@@ -321,23 +321,23 @@ func parseResponse(s *domain.Session, record envelope, turnID, eventID string, t
 		if arguments == "" {
 			arguments = anyString(value["input"])
 		}
-		names := []string{name}
+		calls := []nestedToolCall{{Name: name, Arguments: arguments}}
 		if kind == "custom_tool_call" && name == "exec" {
-			if nested := nestedToolNames(arguments); len(nested) > 0 {
-				names = nested
+			if nested := nestedToolCalls(arguments); len(nested) > 0 {
+				calls = nested
 			}
 		}
-		for index, exactName := range names {
+		for index, nested := range calls {
 			exactID := callID
 			exactEventID := eventID
-			if len(names) > 1 || exactName != name {
+			if len(calls) > 1 || nested.Name != name {
 				exactID = fmt.Sprintf("%s:%d", callID, index+1)
 				exactEventID = fmt.Sprintf("%s:tool-%d", eventID, index+1)
 			}
-			call := newToolCall(exactID, s.ID, turnID, record.Timestamp, exactName, arguments)
+			call := newToolCall(exactID, s.ID, turnID, record.Timestamp, nested.Name, nested.Arguments)
 			toolIndexes[callID] = append(toolIndexes[callID], len(s.ToolCalls))
 			s.ToolCalls = append(s.ToolCalls, call)
-			s.Events = append(s.Events, domain.Event{ID: exactEventID, SessionID: s.ID, TurnID: turnID, Timestamp: record.Timestamp, EventType: "tool", EventSubtype: call.ToolCategory, Source: "transcript", PayloadRedacted: map[string]any{"tool_name": exactName, "target": call.TargetPathDisplay}})
+			s.Events = append(s.Events, domain.Event{ID: exactEventID, SessionID: s.ID, TurnID: turnID, Timestamp: record.Timestamp, EventType: "tool", EventSubtype: call.ToolCategory, Source: "transcript", PayloadRedacted: map[string]any{"tool_name": nested.Name, "target": call.TargetPathDisplay}})
 		}
 	case "function_call_output", "custom_tool_call_output":
 		callID := stringValue(value, "call_id", "id")
@@ -348,19 +348,6 @@ func parseResponse(s *domain.Session, record envelope, turnID, eventID string, t
 			}
 		}
 	}
-}
-
-var nestedToolPattern = regexp.MustCompile(`\btools\.([A-Za-z][A-Za-z0-9_]*)\s*\(`)
-
-func nestedToolNames(input string) []string {
-	matches := nestedToolPattern.FindAllStringSubmatch(input, -1)
-	names := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if len(match) > 1 {
-			names = append(names, match[1])
-		}
-	}
-	return names
 }
 
 func parseEventMessage(s *domain.Session, record envelope, turnID, eventID string, turnIndexes map[string]int, latest *rateLimitSnapshot) {
@@ -480,7 +467,14 @@ func updateToolResult(call *domain.ToolCall, output string) {
 }
 
 func classify(name, args string) string {
-	lower := strings.ToLower(name + " " + args)
+	source := args
+	var value any
+	if json.Unmarshal([]byte(args), &value) == nil {
+		if command := findStringKey(value, map[string]bool{"cmd": true, "command": true}); command != "" {
+			source = command
+		}
+	}
+	lower := strings.ToLower(name + " " + source)
 	switch {
 	case strings.Contains(lower, "apply_patch") || strings.Contains(lower, "write_file") || strings.Contains(lower, "edit"):
 		return "edit"

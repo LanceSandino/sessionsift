@@ -40,6 +40,7 @@ import (
 )
 
 var hostedHTTPClient *http.Client
+var healthHTTPClient = &http.Client{Timeout: 3 * time.Second}
 
 // Run executes a command and returns a process exit code.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
@@ -56,6 +57,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	case "version":
 		fmt.Fprintln(out, app.Version())
 		return 0
+	case "healthcheck":
+		if len(args) != 2 {
+			fmt.Fprintln(errOut, "healthcheck requires agent or bridge")
+			return 2
+		}
+		return healthcheck(args[1], out, errOut)
 	case "start":
 		return start(ctx, paths, out, errOut)
 	case "bridge":
@@ -127,7 +134,30 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sessionsift <start|bridge|agent|support|stop|status|backup|import|import-chatgpt|import-claude|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
+	fmt.Fprintln(w, "usage: sessionsift <start|bridge|agent|support|stop|status|healthcheck|backup|import|import-chatgpt|import-claude|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
+}
+
+func healthcheck(target string, out, errOut io.Writer) int {
+	address := ""
+	switch target {
+	case "agent":
+		address = listenAddress()
+	case "bridge":
+		address = bridgeAddress()
+	default:
+		fmt.Fprintln(errOut, "healthcheck requires agent or bridge")
+		return 2
+	}
+	response, err := healthHTTPClient.Get("http://" + localAddress(address) + "/readyz")
+	if err != nil {
+		return fail(errOut, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fail(errOut, fmt.Errorf("%s readiness returned %s", target, response.Status))
+	}
+	fmt.Fprintf(out, "%s ready\n", target)
+	return 0
 }
 
 // openStore prepares product state, installs the per-installation path-hash
@@ -150,11 +180,6 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	defer store.Close()
-	if replayed, replayErr := ingest.ImportSpool(ctx, store, paths.RawEvents); replayErr != nil {
-		fmt.Fprintf(errOut, "hook spool warning: %v\n", replayErr)
-	} else if replayed > 0 {
-		fmt.Fprintf(out, "Replayed %d spooled hook events.\n", replayed)
-	}
 	codexHome, _ := discover.Home()
 	claudeHome, _ := claudediscover.Home()
 	chatGPTExport := chatGPTExportPath(paths)
@@ -193,6 +218,7 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 	if codexHome != "" {
 		go importAndWatchCodex(stopCtx, store, codexHome, out, errOut)
 	}
+	go replayHookSpool(stopCtx, store, paths.RawEvents, out, errOut)
 	if chatGPTExport != "" {
 		go importAndWatchChatGPT(stopCtx, store, chatGPTExport, out, errOut)
 	}
@@ -217,6 +243,19 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	return 0
+}
+
+func replayHookSpool(ctx context.Context, store *storage.Store, directory string, out, errOut io.Writer) {
+	replayed, err := ingest.ImportSpool(ctx, store, directory)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintf(errOut, "hook spool warning: %v\n", err)
+		}
+		return
+	}
+	if replayed > 0 {
+		fmt.Fprintf(out, "Replayed %d spooled hook events.\n", replayed)
+	}
 }
 
 func startBridge(ctx context.Context, out, errOut io.Writer) int {
@@ -403,12 +442,19 @@ func localProxyOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		ip := net.ParseIP(host)
-		if err != nil || ip == nil || !ip.IsLoopback() {
+		if err != nil || ip == nil || (!ip.IsLoopback() && !trustedProxyPeer(ip)) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// trustedProxyPeer permits exactly one private Docker gateway when configured.
+// Host ports remain loopback-only and sibling container addresses are rejected.
+func trustedProxyPeer(peer net.IP) bool {
+	trusted := net.ParseIP(strings.TrimSpace(os.Getenv("SESSIONSIFT_TRUSTED_PROXY_IP")))
+	return trusted != nil && trusted.IsPrivate() && trusted.Equal(peer)
 }
 
 func watchCodex(ctx context.Context, store *storage.Store, codexHome string, errOut io.Writer) {

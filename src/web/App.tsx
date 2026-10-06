@@ -4,6 +4,7 @@ import {api} from "./api";
 import {AppRail} from "./components/AppRail";
 import {Analytics} from "./components/Analytics";
 import {CommandPalette,type Command} from "./components/CommandPalette";
+import {Changelog} from "./components/Changelog";
 import {Compare} from "./components/Compare";
 import {Connections} from "./components/Connections";
 import {Diagnostics} from "./components/Diagnostics";
@@ -44,6 +45,7 @@ const pageTitles:Record<Exclude<Page,"sessions">,{title:string;meta:string}>={
   optimize:{title:"Optimize",meta:"Recommendations · experiments · weekly report"},
   connections:{title:"Connections",meta:"Owner controls · local authority"},
   diagnostics:{title:"Diagnostics",meta:"Local health · this device"},
+  changelog:{title:"What's new",meta:"Semantic releases · bounded history"},
 };
 
 export function App(){
@@ -147,6 +149,7 @@ export function App(){
       {id:"page:optimize",label:"Optimize workflow",icon:"spark",kind:"page",run:()=>changePage("optimize")},
       {id:"page:connections",label:"Connections",icon:"link",kind:"page",run:()=>changePage("connections")},
       {id:"page:diagnostics",label:"Diagnostics",icon:"health",kind:"page",run:()=>changePage("diagnostics")},
+      {id:"page:changelog",label:"Changelog",icon:"file",kind:"page",run:()=>changePage("changelog")},
     );
     return list;
   },[visibleSessions,detail,theme,selectSession,changeView,changePage,toggleFocus,toggleInspector,toggleTheme]);
@@ -172,6 +175,7 @@ export function App(){
         {page==="optimize"&&<Optimize sessions={visibleSessions}/>}
         {page==="connections"&&<Connections/>}
         {page==="diagnostics"&&<Diagnostics sessions={sessions} status={diagnostics} statusError={diagnosticsError}/>}
+        {page==="changelog"&&<Changelog/>}
       </div></section></div>
     </>;
   }

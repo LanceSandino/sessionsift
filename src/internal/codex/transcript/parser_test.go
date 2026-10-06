@@ -145,6 +145,47 @@ func TestParserExpandsOrchestratedToolsAndMCPServers(t *testing.T) {
 	}
 }
 
+func TestParserKeepsArgumentsForEachOrchestratedRead(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"type":    "custom_tool_call",
+		"call_id": "call",
+		"name":    "exec",
+		"input": `const values = await Promise.all([
+  tools.exec_command({"cmd":"sed -n '1,20p' /skills/protocols/MSP.instructions.md"}),
+  tools.exec_command({"cmd":"sed -n '1,20p' /memories/MEMORY.md"})
+]);`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(map[string]any{"timestamp": "2026-01-01T00:00:02Z", "type": "response_item", "payload": json.RawMessage(payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Join([]string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"nested-reads","cwd":"/tmp/repo"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"root_turn_id":"turn"}}`,
+		string(record),
+	}, "\n")
+	session, err := New().Parse(strings.NewReader(input), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(session.ToolCalls) != 2 {
+		t.Fatalf("expected two expanded reads: %+v", session.ToolCalls)
+	}
+	if session.ParserVersion != "codex-jsonl-v14" {
+		t.Fatalf("parser version %q will not rebuild previously merged nested calls", session.ParserVersion)
+	}
+	first, second := session.ToolCalls[0], session.ToolCalls[1]
+	if first.ToolCategory != "read" || first.TargetPathDisplay != "protocols/MSP.instructions.md" || strings.Contains(first.ArgumentsRedacted, "MEMORY.md") {
+		t.Fatalf("first nested read was not isolated: %+v", first)
+	}
+	if second.ToolCategory != "read" || second.TargetPathDisplay != "memories/MEMORY.md" || strings.Contains(second.ArgumentsRedacted, "MSP.instructions.md") {
+		t.Fatalf("second nested read was not isolated: %+v", second)
+	}
+}
+
 func TestParserPreservesInitialPromptAndClassifiesSameTurnFollowup(t *testing.T) {
 	input := strings.Join([]string{
 		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"steering","cwd":"/tmp/repo","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}`,

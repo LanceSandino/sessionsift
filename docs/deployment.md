@@ -134,9 +134,42 @@ The callback and lifetime checklist is in
 
 ## Supervision
 
-Run the Local Agent and hosted bridge as separate supervised services. Use the
-two launchd templates on macOS or the systemd templates on Linux. Replace paths and load environment values through the service manager;
-do not put Access service-token secrets in a unit committed to Git.
+Run the Local Agent and hosted bridge as separate supervised services. On macOS,
+use the repository `compose.yaml`; the project no longer manages launchd agents.
+Linux operators may use the systemd templates or the same Compose service. Copy
+`.env.sessionsift.example` to ignored `.env.sessionsift.local` and set only the
+host path, numeric owner identity, public URLs, Access issuer and audience IDs.
+Do not put Access service-token secrets in Compose, an image, or a committed
+environment file, and never load `.env.cloudflare` as a Docker environment file.
+
+Before the first migration from another supervisor, create and verify a backup:
+
+```bash
+./dist/sessionsift backup
+./dist/sessionsift doctor
+docker compose --env-file .env.sessionsift.local config --quiet
+docker compose --env-file .env.sessionsift.local build
+```
+
+Stop the old supervisor only after the image builds. Then start and verify the
+Compose services:
+
+```bash
+docker compose --env-file .env.sessionsift.local up -d
+docker compose --env-file .env.sessionsift.local ps
+curl --fail http://127.0.0.1:7777/readyz
+curl --fail http://127.0.0.1:7780/readyz
+```
+
+The agent bind-mounts existing `~/.sessionsift` read/write and only the Codex
+`sessions`, `archived_sessions`, and thread-index SQLite files read-only. The
+bridge bind-mounts existing `~/.sessionsift-bridge` read/write so its database
+and exact KEK remain paired. Both ports publish on `127.0.0.1` only, services
+use separate Docker networks, the filesystem is read-only apart from those
+state mounts and private tmpfs, Linux capabilities are dropped, and restart is
+`unless-stopped`. Each isolated network has an explicit gateway; the process
+accepts only that exact private forwarding peer (plus loopback), so Docker port
+forwarding works without trusting sibling container addresses or the LAN.
 
 SessionSift handles `SIGTERM`, uses bounded graceful shutdown, and applies
 bounded header/read/write/idle timeouts. The templates restart failed processes
@@ -170,7 +203,7 @@ is not yet supported.
 
 1. `npm test` and `npm run build` pass for the release commit.
 2. `sessionsift backup` succeeds before replacing the binary.
-3. Restart both supervised services. Confirm the Local Agent `/readyz` returns
+3. Recreate both Compose services. Confirm the Local Agent `/readyz` returns
    `200` on loopback and the bridge `/readyz` returns `200` on port 7780.
    Source reconciliation runs in the background after the listener opens, so a
    large active transcript does not hold the port closed during restart.

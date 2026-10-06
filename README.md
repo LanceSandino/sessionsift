@@ -73,6 +73,28 @@ Do not route a public tunnel to this port. Public deployments run the separate
 connection bridge on port 7780; the Local Agent stays on loopback and polls the
 bridge outbound.
 
+### Run continuously with Docker Compose
+
+On macOS, the supported supervised-service option is Docker Compose. It keeps
+the existing `~/.sessionsift` and `~/.sessionsift-bridge` state on the host,
+mounts only Codex transcript/index paths read-only, binds both published ports
+to host loopback, and restarts the two services unless explicitly stopped.
+
+```bash
+cp .env.sessionsift.example .env.sessionsift.local
+# Edit the non-secret host path, UID/GID, public URLs, issuer and audience IDs.
+docker compose --env-file .env.sessionsift.local up -d --build
+docker compose --env-file .env.sessionsift.local ps
+curl --fail http://127.0.0.1:7777/readyz
+curl --fail http://127.0.0.1:7780/readyz
+```
+
+Do not point Compose at `.env.cloudflare`; that ignored file is for credentialed
+HTTP probes and is neither a Docker environment file nor build input. Docker
+Desktop `cloudflared` origins continue to use `host.docker.internal:7777` for
+the owner-only UI and `host.docker.internal:7780` for the hosted bridge. See
+[`docs/deployment.md`](docs/deployment.md) for backup, migration, and rollback.
+
 The main commands are:
 
 ```text
@@ -322,6 +344,11 @@ npm test
 npm run build
 ./dist/sessionsift version
 ```
+
+The current release is `2.0.0`. SessionSift follows Semantic Versioning;
+human-readable release notes live in [`CHANGELOG.md`](CHANGELOG.md) and are
+available inside the app at `/changelog` in bounded pages. `CHANGES.md` remains
+the engineering/protocol audit log rather than the release changelog.
 
 The test command enforces coverage floors and builds the embedded frontend.
 

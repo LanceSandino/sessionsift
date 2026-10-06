@@ -3,7 +3,7 @@ import React from "react";
 import type {Page} from "../navigation";
 import {Icon} from "./Icon";
 
-const pageNames:Record<Page,string>={sessions:"Sessions",analytics:"Analytics",compare:"Compare",optimize:"Optimize",connections:"Connections",diagnostics:"Diagnostics"};
+const pageNames:Record<Page,string>={sessions:"Sessions",analytics:"Analytics",compare:"Compare",optimize:"Optimize",connections:"Connections",diagnostics:"Diagnostics",changelog:"Changelog"};
 
 export type SupportIndicator="none"|"waiting"|"connected";
 
