@@ -27,7 +27,7 @@ import (
 
 func TestVersionSetupAndUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "2.0.0") {
+	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "2.0.1") {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 	out.Reset()
@@ -234,6 +234,12 @@ func TestBridgeCommandRequiresAccessConfigurationAndValidatesAddress(t *testing.
 	t.Setenv("SESSIONSIFT_ACCESS_ISSUER", "https://access.example.com")
 	t.Setenv("SESSIONSIFT_ACCESS_AUD", "audience")
 	t.Setenv("SESSIONSIFT_PUBLIC_URL", "")
+	out.Reset()
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"bridge"}, strings.NewReader(""), &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "requires SESSIONSIFT_PUBLIC_URL") {
+		t.Fatalf("bridge public URL code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	t.Setenv("SESSIONSIFT_PUBLIC_URL", "https://sessionsift.example.com")
 	oldListen := listenTCP
 	listenTCP = func(string, string) (net.Listener, error) { return nil, errors.New("bridge bind failed") }
 	t.Cleanup(func() { listenTCP = oldListen })

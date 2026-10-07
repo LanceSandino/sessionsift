@@ -11,6 +11,11 @@ The trusted Go process is the Local Agent product boundary. React, CLI, and
 future MCP clients consume the same allowlisted, versioned Session Protocol;
 provider parsers and SQLite are not client-facing interfaces.
 
+> **Private preview:** SessionSift is being prepared for outside testing, but
+> this repository is not ready for public release. The current publication
+> gates are tracked in
+> [`docs/public-release-readiness.md`](docs/public-release-readiness.md).
+
 ## Screenshots
 
 ![The Conversation lens: a prompt and a steering message, a tool run whose failed race test is selected, and the inspector showing that call's redacted arguments and result](docs/screenshots/01-workspace-conversation.webp)
@@ -18,38 +23,8 @@ provider parsers and SQLite are not client-facing interfaces.
 One session in the **Conversation** lens. Each prompt's tool calls fold into a
 run; a failure later followed by a success is labelled, and the inspector shows
 the selected call's redacted evidence. All screenshots use synthetic demo data.
-
-<details>
-<summary>More screenshots: timeline, tools, review, sharing, pages, dark theme and phone</summary>
-
-<table>
-<tr>
-<td width="50%"><img src="docs/screenshots/03-timeline.webp" alt="Timeline lens with prompt checkpoints and their tool calls"><br><b>Timeline</b>: each prompt's checkpoint with up to eight entries; failures are always kept.</td>
-<td width="50%"><img src="docs/screenshots/04-tools.webp" alt="Tools lens with grouped tools and every call"><br><b>Tools</b>: tools grouped by name and transport, and every call.</td>
-</tr>
-<tr>
-<td><img src="docs/screenshots/05-review.webp" alt="Review lens with decision history and owner notes"><br><b>Review</b>: decisions and notes stay on this device and never reach the agent.</td>
-<td><img src="docs/screenshots/02-workspace-dark.webp" alt="The workspace in the dark theme"><br><b>Dark theme</b>: follows the system unless you choose one.</td>
-</tr>
-<tr>
-<td><img src="docs/screenshots/06-support-code.webp" alt="Support dialog showing a one-session support code with comment access"><br><b>Support code</b>: generated on this device for one session and one role.</td>
-<td><img src="docs/screenshots/13-helper-view.webp" alt="The shared session as the helper sees it on the bridge"><br><b>Helper view</b>: what the supporter sees on the bridge, limited by the grant.</td>
-</tr>
-<tr>
-<td><img src="docs/screenshots/07-connections.webp" alt="Connections page with access-method guidance and bridge status"><br><b>Connections</b>: which access method to use, the bridge, MCP identities and pairing.</td>
-<td><img src="docs/screenshots/08-diagnostics.webp" alt="Diagnostics page with live capture and discovered data"><br><b>Diagnostics</b>: whether capture is arriving and what the agent found.</td>
-</tr>
-<tr>
-<td><img src="docs/screenshots/09-analytics.webp" alt="Analytics page with aggregate totals and breakdowns"><br><b>Analytics</b>: aggregates only, no conversation text.</td>
-<td><img src="docs/screenshots/10-command-palette.webp" alt="Command palette listing sessions, views and actions"><br><b>Command palette</b>: <code>Ctrl/Cmd K</code> for sessions, lenses and actions.</td>
-</tr>
-<tr>
-<td><img src="docs/screenshots/11-phone.webp" alt="The conversation on a phone" width="260"><br><b>Phone</b>: the same conversation at 390px.</td>
-<td><img src="docs/screenshots/12-phone-library.webp" alt="The session library drawer on a phone" width="260"><br><b>Phone library</b>: pages and sessions in one drawer.</td>
-</tr>
-</table>
-
-</details>
+See the [guided screenshot tour](docs/screenshot-tour.md) for local analysis,
+diagnostics, mobile layouts, and the optional sharing workflow.
 
 ## Quick start
 
@@ -67,7 +42,9 @@ Open <http://127.0.0.1:7777>. SessionSift imports
 `~/.codex`) and Claude Code's `$CLAUDE_CONFIG_DIR/projects` (normally
 `~/.claude/projects`). Re-running `import` processes only changed transcript
 files. Starting the app also watches those directories and refreshes changed
-sessions every three seconds.
+sessions on a background scan 15 seconds after the previous scan completes.
+This coalesces active writes and keeps idle collection inexpensive. Startup and
+manual imports run immediately; lifecycle hooks still arrive immediately.
 
 Do not route a public tunnel to this port. Public deployments run the separate
 connection bridge on port 7780; the Local Agent stays on loopback and polls the
@@ -75,24 +52,33 @@ bridge outbound.
 
 ### Run continuously with Docker Compose
 
-On macOS, the supported supervised-service option is Docker Compose. It keeps
-the existing `~/.sessionsift` and `~/.sessionsift-bridge` state on the host,
-mounts only Codex transcript/index paths read-only, binds both published ports
-to host loopback, and restarts the two services unless explicitly stopped.
+On macOS, the supported supervised-service option is Docker Compose. The
+default file runs only the Local Agent. It keeps the existing
+`~/.sessionsift` state on the host, mounts only Codex transcript/index paths
+read-only, binds port 7777 to host loopback, and restarts unless explicitly
+stopped. The hosted bridge is not required for local use.
 
 ```bash
 cp .env.sessionsift.example .env.sessionsift.local
-# Edit the non-secret host path, UID/GID, public URLs, issuer and audience IDs.
+# Edit the non-secret host path and UID/GID.
 docker compose --env-file .env.sessionsift.local up -d --build
 docker compose --env-file .env.sessionsift.local ps
 curl --fail http://127.0.0.1:7777/readyz
+```
+
+Only operators who intentionally deploy remote support, invitations, or hosted
+MCP should add the bridge overlay and its Cloudflare Access values:
+
+```bash
+docker compose -f compose.yaml -f compose.remote.yaml \
+  --env-file .env.sessionsift.local up -d --build
 curl --fail http://127.0.0.1:7780/readyz
 ```
 
 Do not point Compose at `.env.cloudflare`; that ignored file is for credentialed
 HTTP probes and is neither a Docker environment file nor build input. Docker
-Desktop `cloudflared` origins continue to use `host.docker.internal:7777` for
-the owner-only UI and `host.docker.internal:7780` for the hosted bridge. See
+Desktop `cloudflared` origins use `host.docker.internal:7777` for an optional
+owner-only UI tunnel and `host.docker.internal:7780` for the optional hosted bridge. See
 [`docs/deployment.md`](docs/deployment.md) for backup, migration, and rollback.
 
 The main commands are:
@@ -345,7 +331,7 @@ npm run build
 ./dist/sessionsift version
 ```
 
-The current release is `2.0.0`. SessionSift follows Semantic Versioning;
+The current release is `2.0.1`. SessionSift follows Semantic Versioning;
 human-readable release notes live in [`CHANGELOG.md`](CHANGELOG.md) and are
 available inside the app at `/changelog` in bounded pages. `CHANGES.md` remains
 the engineering/protocol audit log rather than the release changelog.
@@ -385,4 +371,6 @@ operations are intentionally absent and fail closed.
 
 SessionSift is source-available under the
 [PolyForm Noncommercial License 1.0.0](LICENSE). Noncommercial use is allowed;
-commercial use is not licensed.
+commercial use is not licensed. The required copyright notice is in
+[`NOTICE`](NOTICE). If you want to evaluate a commercial use or hosted offering,
+contact the copyright holder before relying on these terms.

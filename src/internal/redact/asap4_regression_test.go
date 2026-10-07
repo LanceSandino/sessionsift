@@ -41,12 +41,12 @@ func TestHomeAndAccountPathsAreRedactedInEveryEncoding(t *testing.T) {
 func TestAdditionalProviderCredentialsAreRedacted(t *testing.T) {
 	secrets := []string{
 		"sk-ant-" + "api03-abcdefghijklmnopqrstuvwxyz0123456789",
-		"sk_live_" + "abcdefghijklmnopqrstuvwx",
-		"rk_live_" + "abcdefghijklmnopqrstuvwx",
+		"sk_live_" + "abcdefghijklmnopqrstuvwx", // gitleaks:allow -- synthetic redaction fixture
+		"rk_live_" + "abcdefghijklmnopqrstuvwx", // gitleaks:allow -- synthetic redaction fixture
 		"xoxb-" + "123456789012-abcdefghijklmnop",
 		"AIzaSy" + "A-abcdefghijklmnopqrstuvwxyz01234",
-		"glpat-" + "abcdefghijklmnopqrst",
-		"npm_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+		"glpat-" + "abcdefghijklmnopqrst",               // gitleaks:allow -- synthetic redaction fixture
+		"npm_" + "abcdefghijklmnopqrstuvwxyz0123456789", // gitleaks:allow -- synthetic redaction fixture
 		"hf_" + "abcdefghijklmnopqrstuvwxyzABCDEF",
 		"github_pat_" + "11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz",
 	}
@@ -55,7 +55,7 @@ func TestAdditionalProviderCredentialsAreRedacted(t *testing.T) {
 			t.Fatalf("credential retained: %q", got)
 		}
 	}
-	for _, assignment := range []string{"aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "SECRET_KEY: hunter2hunter2", "private_token = abcdef123456", "DB_PASSWORD=correcthorse"} {
+	for _, assignment := range []string{"aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "SECRET_KEY: hunter2hunter2", "private_token = abcdef123456", "DB_PASSWORD=correcthorse"} { // gitleaks:allow -- synthetic redaction fixtures
 		got := Text(assignment, 0)
 		if !strings.Contains(got, "[REDACTED]") {
 			t.Fatalf("named secret retained: %q", got)
@@ -119,7 +119,7 @@ func TestAccountPlaceholderIsMarkdownSafe(t *testing.T) {
 // Large inputs are scanned only to maxBytes plus a margin; credentials cut by
 // that scan boundary must still be redacted rather than partially retained.
 func TestBoundedScanRedactsCredentialsCutAtTheMargin(t *testing.T) {
-	pem := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Repeat("MIIEpAIBAAKCAQEA0vx7agoebGcQSuuPiLJXZpt", 2000) + "\n-----END RSA PRIVATE KEY-----"
+	pem := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Repeat("MIIEpAIBAAKCAQEA0vx7agoebGcQSuuPiLJXZpt", 2000) + "\n-----END RSA PRIVATE KEY-----" // gitleaks:allow -- synthetic redaction fixture
 	got := Text("key follows "+pem+strings.Repeat(" tail", 10), 64)
 	if strings.Contains(got, "MIIEpAIBAAKCAQEA") {
 		t.Fatalf("cut-off private key retained: %q", got)

@@ -74,7 +74,7 @@ func TestLocalOwnerAPIRejectsCrossSiteMutations(t *testing.T) {
 func TestHookReceiverRedactsEveryUnknownPayloadKey(t *testing.T) {
 	store := testStore(t)
 	handler := Handler(store)
-	body := `{"session_id":"hook-leak","hook_event_name":"Stop","last_assistant_message":"use password=hunter2secret now","custom_instructions":"api_key=abc123456789xyz","agent_transcript_path":"/Users/alice/.claude/projects/p/x.jsonl","nested":{"token":"sk-abcdefghijklmnopqrstuvwx"}}`
+	body := `{"session_id":"hook-leak","hook_event_name":"Stop","last_assistant_message":"use password=hunter2secret now","custom_instructions":"api_key=abc123456789xyz","agent_transcript_path":"/Users/alice/.claude/projects/p/x.jsonl","nested":{"token":"sk-abcdefghijklmnopqrstuvwx"}}` // gitleaks:allow -- synthetic redaction fixture
 	request := localRequest(http.MethodPost, "/internal/hooks/codex", strings.NewReader(body))
 	request.Host = "127.0.0.1:7777"
 	request.Header.Set("Content-Type", "application/json")

@@ -282,7 +282,7 @@ func startBridge(ctx context.Context, out, errOut io.Writer) int {
 	}
 	publicURL := strings.TrimSpace(os.Getenv("SESSIONSIFT_PUBLIC_URL"))
 	if publicURL == "" {
-		publicURL = "https://bridge.example.com"
+		return fail(errOut, errors.New("bridge requires SESSIONSIFT_PUBLIC_URL"))
 	}
 	address := bridgeAddress()
 	listener, err := listenTCP("tcp", address)
@@ -458,18 +458,12 @@ func trustedProxyPeer(peer net.IP) bool {
 }
 
 func watchCodex(ctx context.Context, store *storage.Store, codexHome string, errOut io.Writer) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if _, err := ingest.ImportAll(ctx, store, codexHome); err != nil && ctx.Err() == nil {
-				fmt.Fprintf(errOut, "live import warning: %v\n", err)
-			}
-		}
-	}
+	watchCollection(ctx, collectionWatchInterval, func() error {
+		_, err := ingest.ImportAll(ctx, store, codexHome)
+		return err
+	}, func(err error) {
+		fmt.Fprintf(errOut, "live import warning: %v\n", err)
+	})
 }
 
 func stop(paths config.Paths, out, errOut io.Writer) int {

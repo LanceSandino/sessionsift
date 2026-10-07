@@ -9,11 +9,17 @@ import (
 )
 
 func TestDockerServiceContract(t *testing.T) {
-	compose, err := os.ReadFile("../../../compose.yaml")
+	localCompose, err := os.ReadFile("../../../compose.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(compose)
+	remoteCompose, err := os.ReadFile("../../../compose.remote.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localText := string(localCompose)
+	remoteText := string(remoteCompose)
+	text := localText + "\n" + remoteText
 	for _, required := range []string{
 		"agent:", "bridge:", "restart: unless-stopped", "127.0.0.1:7777:7777", "127.0.0.1:7780:7780",
 		".sessionsift:/state", ".sessionsift-bridge:/bridge-state", ".codex/sessions:/sources/codex/sessions:ro",
@@ -23,6 +29,12 @@ func TestDockerServiceContract(t *testing.T) {
 		if !strings.Contains(text, required) {
 			t.Errorf("compose.yaml missing %q", required)
 		}
+	}
+	if strings.Contains(localText, "bridge:") || strings.Contains(localText, "SESSIONSIFT_ACCESS_ISSUER") {
+		t.Fatal("the default Compose service must remain local-only")
+	}
+	if !strings.Contains(remoteText, "bridge:") || !strings.Contains(remoteText, "SESSIONSIFT_ACCESS_ISSUER") {
+		t.Fatal("the optional remote Compose file must contain the hosted bridge")
 	}
 	if strings.Contains(text, ".codex:/sources/codex") || strings.Contains(text, ".env.cloudflare") {
 		t.Fatal("compose must not mount the whole Codex home or load the curl credential file")

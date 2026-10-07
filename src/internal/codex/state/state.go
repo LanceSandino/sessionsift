@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/LanceSandino/sessionsift/src/internal/redact"
@@ -85,7 +84,9 @@ func Load(ctx context.Context, path string) (Snapshot, error) {
 			CreatedAtMS: created.Int64, UpdatedAtMS: updated.Int64,
 		}
 		metadata.RuntimeLocation = runtimeLocation(surface, metadata.Originator)
-		metadata.Revision = redact.Hash(strings.Join([]string{metadata.Name, metadata.Originator, metadata.Surface, metadata.ThreadSource, metadata.ApprovalMode, metadata.SandboxPolicy, metadata.NetworkAccess, metadata.GitBranch, metadata.Model, metadata.ReasoningEffort, strconv.FormatInt(metadata.UpdatedAtMS, 10)}, "\x00"))
+		// Only imported fields are a revision. Codex updates its heartbeat
+		// timestamp without changing any session evidence or enrichment.
+		metadata.Revision = redact.Hash(strings.Join([]string{metadata.Name, metadata.Originator, metadata.Surface, metadata.ThreadSource, metadata.ApprovalMode, metadata.SandboxPolicy, metadata.NetworkAccess, metadata.GitBranch, metadata.Model, metadata.ReasoningEffort, metadata.CLIVersion}, "\x00"))
 		snapshot.threads[id] = metadata
 	}
 	return snapshot, rows.Err()

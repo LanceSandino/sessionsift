@@ -227,6 +227,10 @@ func ImportAll(ctx context.Context, store *storage.Store, codexHome string) (Res
 		return Result{}, err
 	}
 	result := Result{Discovered: len(sources)}
+	records, err := store.ImportRecords(ctx)
+	if err != nil {
+		return result, err
+	}
 	threadState, stateErr := state.Load(ctx, filepath.Join(codexHome, "state_5.sqlite"))
 	if stateErr != nil {
 		result.Warnings = append(result.Warnings, "Codex thread metadata unavailable: "+stateErr.Error())
@@ -243,17 +247,40 @@ func ImportAll(ctx context.Context, store *storage.Store, codexHome string) (Res
 			continue
 		}
 		metadata, hasMetadata := threadState.Thread(state.IdentityFromPath(source.Path))
-		quickFingerprint := sourceFingerprint(info.Size(), info.ModTime())
+		transcriptFingerprint := sourceFingerprint(info.Size(), info.ModTime())
+		quickFingerprint := transcriptFingerprint
 		if hasMetadata {
 			quickFingerprint += ":" + metadata.Revision
 		}
 		pathHash := redact.Hash(source.Path)
-		needed, err := store.ImportNeeded(ctx, pathHash, quickFingerprint)
-		if err != nil {
-			return result, err
-		}
-		if !needed {
+		previous, imported := records[pathHash]
+		if imported && previous.Fingerprint == quickFingerprint {
 			result.Skipped++
+			continue
+		}
+		// A heartbeat or rename must not reparse a potentially gigabyte-sized
+		// transcript. Keep the last enrichment during transient state failures.
+		unchangedTranscript := imported && (previous.Fingerprint == transcriptFingerprint || strings.HasPrefix(previous.Fingerprint, transcriptFingerprint+":"))
+		if unchangedTranscript {
+			if !hasMetadata {
+				result.Skipped++
+				continue
+			}
+			session, err := store.GetSession(ctx, previous.SessionID)
+			if err == nil {
+				session.CWD, err = codexWorkspace(source.Path)
+			}
+			if err == nil {
+				enrichCodexSession(&session, metadata)
+				scrubWorkspace(&session)
+				err = store.SaveImportMetadata(ctx, pathHash, quickFingerprint, session)
+			}
+			if err != nil {
+				result.Failed++
+				result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %v", redact.DisplayPath(source.Path), err))
+				continue
+			}
+			result.Imported++
 			continue
 		}
 		session, _, err := parser.ParseFile(source.Path, source.Archived)
@@ -286,6 +313,18 @@ func ImportAll(ctx context.Context, store *storage.Store, codexHome string) (Res
 }
 
 func enrichCodexSession(session *domain.Session, metadata state.Metadata) {
+	if metadata.Name == "" && session.TitleSource == "renamed" {
+		session.Title, session.TitleSource = "Untitled Codex session", "fallback"
+		for _, turn := range session.Turns {
+			if turn.UserPromptRedacted != "" {
+				session.Title, session.TitleSource = redact.Title(turn.UserPromptRedacted, 80), "first_prompt"
+				break
+			}
+		}
+		if session.Kind == domain.InternalReviewSession {
+			session.Title = "Auto-review approval assessment"
+		}
+	}
 	if metadata.Name != "" {
 		session.Title = metadata.Name
 		session.TitleSource = "renamed"

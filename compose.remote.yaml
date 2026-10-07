@@ -1,0 +1,47 @@
+name: sessionsift
+
+# Optional hosted bridge. Run this file together with compose.yaml only when
+# remote support, invitations, or hosted MCP access are deliberately enabled.
+services:
+  bridge:
+    image: sessionsift:2.0.1
+    build:
+      context: .
+    user: "${SESSIONSIFT_UID:-501}:${SESSIONSIFT_GID:-20}"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    command: ["bridge"]
+    environment:
+      SESSIONSIFT_BRIDGE_HOME: /bridge-state
+      SESSIONSIFT_BRIDGE_ADDR: 0.0.0.0:7780
+      SESSIONSIFT_BRIDGE_KEK_FILE: /bridge-state/bridge.db.key
+      SESSIONSIFT_PUBLIC_URL: "${SESSIONSIFT_BRIDGE_PUBLIC_URL:?set SESSIONSIFT_BRIDGE_PUBLIC_URL}"
+      SESSIONSIFT_ACCESS_ISSUER: "${SESSIONSIFT_ACCESS_ISSUER:?set SESSIONSIFT_ACCESS_ISSUER}"
+      SESSIONSIFT_ACCESS_AUD: "${SESSIONSIFT_ACCESS_AUD:?set SESSIONSIFT_ACCESS_AUD}"
+      SESSIONSIFT_TRUSTED_PROXY_IP: 172.30.78.1
+    ports:
+      - "127.0.0.1:7780:7780"
+    volumes:
+      - "${SESSIONSIFT_HOST_HOME:?set SESSIONSIFT_HOST_HOME}/.sessionsift-bridge:/bridge-state"
+    networks:
+      - bridge-egress
+    healthcheck:
+      test: ["CMD", "/app/sessionsift", "healthcheck", "bridge"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+networks:
+  bridge-egress:
+    ipam:
+      config:
+        - subnet: 172.30.78.0/29
+          gateway: 172.30.78.1

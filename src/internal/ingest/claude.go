@@ -24,6 +24,10 @@ func ImportClaude(ctx context.Context, store *storage.Store, claudeHome string) 
 		return Result{}, err
 	}
 	result := Result{Discovered: len(sources)}
+	records, err := store.ImportRecords(ctx)
+	if err != nil {
+		return result, err
+	}
 	parser := claudetranscript.New()
 	for _, source := range sources {
 		if err := ctx.Err(); err != nil {
@@ -37,11 +41,7 @@ func ImportClaude(ctx context.Context, store *storage.Store, claudeHome string) 
 		}
 		fingerprint := fmt.Sprintf("%s:%d:%d", domain.ClaudeCodeParserVersion, info.Size(), info.ModTime().UnixNano())
 		pathHash := redact.Hash("claude-code:" + source.Path)
-		needed, err := store.ImportNeeded(ctx, pathHash, fingerprint)
-		if err != nil {
-			return result, err
-		}
-		if !needed {
+		if previous, imported := records[pathHash]; imported && previous.Fingerprint == fingerprint {
 			result.Skipped++
 			continue
 		}

@@ -133,7 +133,7 @@ func TestParseFallbackTitlesAndTimestamps(t *testing.T) {
 }
 
 func TestParseRedactsSecretsInNameAndText(t *testing.T) {
-	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123"
+	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123" // gitleaks:allow -- synthetic redaction fixture
 	session := parseOne(t, `[{"uuid": "c1", "name": "Rotate `+secret+`", "chat_messages": [
     {"uuid": "h1", "sender": "human", "text": "My token is `+secret+`", "attachments": [{"file_name": "`+secret+`.txt"}]},
     {"uuid": "a1", "sender": "assistant", "content": [{"type": "text", "text": "Revoke `+secret+`"}, {"type": "tool_use", "id": "t", "name": "run", "input": {"token": "`+secret+`"}}]}

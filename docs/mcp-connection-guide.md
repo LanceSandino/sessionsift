@@ -45,7 +45,7 @@ Local Agent enforce the device-created grant.
 
 ChatGPT (developer-mode connectors) and Claude (Settings → Connectors → Add custom
 connector, or `claude mcp add --transport http sessionsift https://YOUR-BRIDGE/mcp`)
-connect to `https://bridge.example.com/mcp`. This endpoint
+connect to `https://sessionsift.example.com/mcp`. This endpoint
 uses current Streamable HTTP MCP through the official Go SDK and requires both:
 
 1. a valid Cloudflare Access `Cf-Access-Jwt-Assertion`, produced through

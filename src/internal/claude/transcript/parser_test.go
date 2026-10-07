@@ -134,7 +134,7 @@ func TestTitlePrecedence(t *testing.T) {
 }
 
 func TestSecretsAreRedactedInPromptTitleArgumentsAndSignature(t *testing.T) {
-	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123"
+	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123" // gitleaks:allow -- synthetic redaction fixture
 	records := []fields{
 		userRecord(1, "p1", "Deploy with token "+secret+" please"),
 		assistantRecord(2, "m1", "claude-opus-5", toolUseBlock("t1", "Bash", fields{"command": "curl -H 'X-Key: " + secret + "' https://example.test/items/123456"}), nil),

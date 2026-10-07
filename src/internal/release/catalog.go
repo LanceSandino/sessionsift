@@ -4,7 +4,7 @@ package release
 
 import "fmt"
 
-const currentVersion = "2.0.0"
+const currentVersion = "2.0.1"
 
 // ChangeGroup collects related user-visible changes within a release.
 type ChangeGroup struct {
@@ -39,6 +39,10 @@ type PageResult struct {
 }
 
 var releases = []Release{
+	{Version: "2.0.1", Date: "2026-10-07", Title: "Lower background CPU use", Changes: []ChangeGroup{
+		{Category: "Improved", Items: []string{"Background collection coalesces transcript changes and waits between scans, including when no browser is open.", "Unchanged transcripts use one batched import-manifest read instead of a database query for every file."}},
+		{Category: "Fixed", Items: []string{"Codex heartbeat timestamps no longer trigger full transcript imports; renamed titles and execution metadata refresh without reparsing conversation history."}},
+	}},
 	{
 		Version: "2.0.0",
 		Date:    "2026-10-05",

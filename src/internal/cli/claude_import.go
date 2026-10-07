@@ -17,7 +17,7 @@ import (
 )
 
 // claudeWatchInterval paces Claude Code transcript reconciliation.
-var claudeWatchInterval = 3 * time.Second
+var claudeWatchInterval = collectionWatchInterval
 
 func importAndWatchClaude(ctx context.Context, store *storage.Store, home string, out, errOut io.Writer) {
 	result, err := ingest.ImportClaude(ctx, store, home)
@@ -29,18 +29,12 @@ func importAndWatchClaude(ctx context.Context, store *storage.Store, home string
 		fmt.Fprintf(out, "Imported %d of %d Claude Code transcripts (%d unchanged).\n", result.Imported, result.Discovered, result.Skipped)
 		reportImportFailures(errOut, "Claude Code", result)
 	}
-	ticker := time.NewTicker(claudeWatchInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if _, err = ingest.ImportClaude(ctx, store, home); err != nil && ctx.Err() == nil {
-				fmt.Fprintf(errOut, "Claude Code live import warning: %v\n", err)
-			}
-		}
-	}
+	watchCollection(ctx, claudeWatchInterval, func() error {
+		_, err := ingest.ImportClaude(ctx, store, home)
+		return err
+	}, func(err error) {
+		fmt.Fprintf(errOut, "Claude Code live import warning: %v\n", err)
+	})
 }
 
 // importAndWatchExport imports a remembered export and re-imports it when the

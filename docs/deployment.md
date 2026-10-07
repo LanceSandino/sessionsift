@@ -31,7 +31,7 @@ Managed OAuth; configuration requires dashboard access or an API token with
 Access Apps and Policies write permission.
 
 Create a separate, more-specific self-hosted Access application for
-`bridge.example.com/invite/*`. Its Allow policy should require the
+`sessionsift.example.com/invite/*`. Its Allow policy should require the
 Google login method; do not add a Bypass or Service Auth policy to this path.
 Cloudflare assigns that path application a different audience from the main
 application, so `SESSIONSIFT_ACCESS_AUD` must contain both exact audience tags,
@@ -135,8 +135,9 @@ The callback and lifetime checklist is in
 ## Supervision
 
 Run the Local Agent and hosted bridge as separate supervised services. On macOS,
-use the repository `compose.yaml`; the project no longer manages launchd agents.
-Linux operators may use the systemd templates or the same Compose service. Copy
+use `compose.yaml` for the local-only agent and add `compose.remote.yaml` only
+for a deliberate hosted deployment; the project no longer manages launchd
+agents. Linux operators may use the systemd templates or the same Compose files. Copy
 `.env.sessionsift.example` to ignored `.env.sessionsift.local` and set only the
 host path, numeric owner identity, public URLs, Access issuer and audience IDs.
 Do not put Access service-token secrets in Compose, an image, or a committed
@@ -147,16 +148,16 @@ Before the first migration from another supervisor, create and verify a backup:
 ```bash
 ./dist/sessionsift backup
 ./dist/sessionsift doctor
-docker compose --env-file .env.sessionsift.local config --quiet
-docker compose --env-file .env.sessionsift.local build
+docker compose -f compose.yaml -f compose.remote.yaml --env-file .env.sessionsift.local config --quiet
+docker compose -f compose.yaml -f compose.remote.yaml --env-file .env.sessionsift.local build
 ```
 
 Stop the old supervisor only after the image builds. Then start and verify the
 Compose services:
 
 ```bash
-docker compose --env-file .env.sessionsift.local up -d
-docker compose --env-file .env.sessionsift.local ps
+docker compose -f compose.yaml -f compose.remote.yaml --env-file .env.sessionsift.local up -d
+docker compose -f compose.yaml -f compose.remote.yaml --env-file .env.sessionsift.local ps
 curl --fail http://127.0.0.1:7777/readyz
 curl --fail http://127.0.0.1:7780/readyz
 ```

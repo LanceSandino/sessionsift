@@ -1,6 +1,6 @@
 {
   "name": "sessionsift",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Local-first Codex, Claude Code, ChatGPT, and Claude session profiler and workflow analyzer",
   "author": "Lance Sandino",
   "license": "PolyForm-Noncommercial-1.0.0",

@@ -4,6 +4,23 @@ All notable SessionSift releases are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and the in-app
 changelog presents this same newest-first release history in bounded pages.
 
+## [Unreleased]
+
+### Security
+
+- Updated `source-map-js` to 1.2.2 to address GHSA-68fv-2mgg-jv7q.
+
+## [2.0.1] - 2026-10-07
+
+### Improved
+
+- Background collection coalesces transcript changes and waits between scans, including when no browser is open.
+- Unchanged transcripts use one batched import-manifest read instead of a database query for every file.
+
+### Fixed
+
+- Codex heartbeat timestamps no longer trigger full transcript imports; renamed titles and execution metadata refresh without reparsing conversation history.
+
 ## [2.0.0] - 2026-10-05
 
 ### Added

@@ -1,7 +1,7 @@
 name: sessionsift
 
 x-runtime: &runtime
-  image: sessionsift:2.0.0
+  image: sessionsift:2.0.1
   user: "${SESSIONSIFT_UID:-501}:${SESSIONSIFT_GID:-20}"
   init: true
   restart: unless-stopped
@@ -25,7 +25,7 @@ services:
       SESSIONSIFT_ADDR: 0.0.0.0:7777
       SESSIONSIFT_ALLOW_DOCKER_TUNNEL: "true"
       SESSIONSIFT_TRUSTED_PROXY_IP: 172.30.77.1
-      SESSIONSIFT_PUBLIC_URL: "${SESSIONSIFT_AGENT_PUBLIC_URL:-https://sessionsift.example.com}"
+      SESSIONSIFT_PUBLIC_URL: "${SESSIONSIFT_AGENT_PUBLIC_URL:-http://127.0.0.1:7777}"
     ports:
       - "127.0.0.1:7777:7777"
     volumes:
@@ -44,38 +44,9 @@ services:
       retries: 5
       start_period: 30s
 
-  bridge:
-    <<: *runtime
-    command: ["bridge"]
-    environment:
-      SESSIONSIFT_BRIDGE_HOME: /bridge-state
-      SESSIONSIFT_BRIDGE_ADDR: 0.0.0.0:7780
-      SESSIONSIFT_BRIDGE_KEK_FILE: /bridge-state/bridge.db.key
-      SESSIONSIFT_PUBLIC_URL: "${SESSIONSIFT_BRIDGE_PUBLIC_URL:?set SESSIONSIFT_BRIDGE_PUBLIC_URL}"
-      SESSIONSIFT_ACCESS_ISSUER: "${SESSIONSIFT_ACCESS_ISSUER:?set SESSIONSIFT_ACCESS_ISSUER}"
-      SESSIONSIFT_ACCESS_AUD: "${SESSIONSIFT_ACCESS_AUD:?set SESSIONSIFT_ACCESS_AUD}"
-      SESSIONSIFT_TRUSTED_PROXY_IP: 172.30.78.1
-    ports:
-      - "127.0.0.1:7780:7780"
-    volumes:
-      - "${SESSIONSIFT_HOST_HOME:?set SESSIONSIFT_HOST_HOME}/.sessionsift-bridge:/bridge-state"
-    networks:
-      - bridge-egress
-    healthcheck:
-      test: ["CMD", "/app/sessionsift", "healthcheck", "bridge"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
 networks:
   agent-egress:
     ipam:
       config:
         - subnet: 172.30.77.0/29
           gateway: 172.30.77.1
-  bridge-egress:
-    ipam:
-      config:
-        - subnet: 172.30.78.0/29
-          gateway: 172.30.78.1
