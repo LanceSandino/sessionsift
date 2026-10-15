@@ -69,6 +69,7 @@ export function App(){
   const[overlay,setOverlay]=useState<Overlay>("none");
   const[toast,setToast]=useState("");
   const[support,setSupport]=useState<SupportIndicator>("none");
+  const[showRemote,setShowRemote]=useState(false);
   const[now,setNow]=useState(()=>Date.now());
   const searchRef=useRef<HTMLInputElement>(null);
   const narrow=useMediaQuery(narrowQuery);
@@ -87,12 +88,12 @@ export function App(){
   // Collector activity is live only while Diagnostics is open; a failed probe stays on that page.
   useEffect(()=>{if(page!=="diagnostics")return;let active=true;let timer=0;const refresh=()=>api.diagnostics().then(value=>{if(active){setDiagnostics(value);setDiagnosticsError("")}}).catch(err=>active&&setDiagnosticsError(String(err))).finally(()=>{if(active)timer=window.setTimeout(refresh,5000)});refresh();return()=>{active=false;window.clearTimeout(timer)}},[page]);
   useEffect(()=>{
-    if(!selected){setSupport("none");return}
+    if(!showRemote||!selected){setSupport("none");return}
     let active=true;
     const check=()=>api.supportSessions().then(values=>{if(!active)return;const current=activeSupportFor(values,selected,Date.now());setSupport(current?liveStatus(current,Date.now())==="connected"?"connected":"waiting":"none")}).catch(()=>{if(active)setSupport("none")});
     check();const timer=window.setInterval(check,10000);
     return()=>{active=false;window.clearInterval(timer)};
-  },[selected,overlay]);
+  },[showRemote,selected,overlay]);
   useEffect(()=>{if(!toast)return;const timer=window.setTimeout(()=>setToast(""),3800);return()=>window.clearTimeout(timer)},[toast]);
 
   const closeSurfaces=()=>{setSidebarOpen(false);setInspectorOverlay(false)};
@@ -137,10 +138,10 @@ export function App(){
       {id:"view:timeline",label:"Timeline",icon:"timeline",kind:"view",run:()=>changeView("timeline")},
       {id:"view:tools",label:"Tools & evidence",icon:"tool",kind:"view",run:()=>changeView("tools")},
       {id:"view:review",label:"Review notes & decision",icon:"note",kind:"view",run:()=>changeView("review")},
-      {id:"action:share",label:"Share this conversation",icon:"users",kind:"action",run:()=>{setPage("sessions");setOverlay("share")}},
       {id:"action:focus",label:"Toggle focus mode",icon:"focus",kind:"action",run:()=>{setPage("sessions");toggleFocus()}},
       {id:"action:inspector",label:"Toggle inspector",icon:"panel",kind:"action",run:toggleInspector},
     );
+    if(detail&&showRemote)list.push({id:"action:share",label:"Share this conversation",icon:"users",kind:"action",run:()=>{setPage("sessions");setOverlay("share")}});
     list.push(
       {id:"action:theme",label:"Toggle light / dark theme",icon:theme==="dark"?"sun":"moon",kind:"action",run:toggleTheme},
       {id:"action:import",label:"Import conversations",icon:"import",kind:"action",run:()=>setOverlay("import")},
@@ -152,7 +153,7 @@ export function App(){
       {id:"page:changelog",label:"Changelog",icon:"file",kind:"page",run:()=>changePage("changelog")},
     );
     return list;
-  },[visibleSessions,detail,theme,selectSession,changeView,changePage,toggleFocus,toggleInspector,toggleTheme]);
+  },[visibleSessions,detail,showRemote,theme,selectSession,changeView,changePage,toggleFocus,toggleInspector,toggleTheme]);
 
   const sessionPage=page==="sessions";
   const inspectorOpen=narrow?inspectorOverlay:!inspectorHidden&&!focus;
@@ -173,7 +174,7 @@ export function App(){
         {page==="analytics"&&(analytics?<Analytics report={analytics}/>:<Message icon="chart" title="Calculating local aggregates…" body="Only counts and totals are computed; no conversation text is read for this page."/>)}
         {page==="compare"&&<Compare sessions={visibleSessions} initial={visibleSessions.some(item=>item.id===selected)?selected:visibleSessions[0]?.id}/>}
         {page==="optimize"&&<Optimize sessions={visibleSessions}/>}
-        {page==="connections"&&<Connections/>}
+        {page==="connections"&&<Connections showRemote={showRemote} onShowRemote={setShowRemote}/>}
         {page==="diagnostics"&&<Diagnostics sessions={sessions} status={diagnostics} statusError={diagnosticsError}/>}
         {page==="changelog"&&<Changelog/>}
       </div></section></div>
@@ -186,12 +187,12 @@ export function App(){
       <AppRail page={page} theme={theme} onPage={changePage} onTheme={toggleTheme}/>
       <SessionNavigator sessions={sessions} selected={sessionPage?selected:undefined} page={page} now={now} searchRef={searchRef} onSelect={selectSession} onPage={changePage} onImport={()=>setOverlay("import")} onClose={()=>setSidebarOpen(false)}/>
       <main className="stage" aria-label={sessionPage?"Session":pageTitles[page].title}>
-        <TopBar page={page} place={detail?sessionPlace(detail):undefined} focus={focus} inspectorOpen={inspectorOpen} support={support} canShare={Boolean(detail)} onMenu={()=>setSidebarOpen(true)} onCommand={()=>setOverlay("command")} onFocus={toggleFocus} onInspector={toggleInspector} onSupport={()=>setOverlay("share")}/>
+        <TopBar page={page} place={detail?sessionPlace(detail):undefined} focus={focus} inspectorOpen={inspectorOpen} support={support} canShare={showRemote&&Boolean(detail)} onMenu={()=>setSidebarOpen(true)} onCommand={()=>setOverlay("command")} onFocus={toggleFocus} onInspector={toggleInspector} onSupport={()=>setOverlay("share")}/>
         {stage}
       </main>
       <StatusBar online={!error} location={location} refreshedAt={refreshedAt} onDiagnostics={()=>changePage("diagnostics")}/>
     </div>
-    <ShareDialog open={overlay==="share"} session={detail} onClose={()=>setOverlay("none")} onOpenConnections={()=>{setOverlay("none");changePage("connections")}}/>
+    {showRemote&&<ShareDialog open={overlay==="share"} session={detail} onClose={()=>setOverlay("none")} onOpenConnections={()=>{setOverlay("none");changePage("connections")}}/>}
     <ImportDialog open={overlay==="import"} onClose={()=>setOverlay("none")}/>
     <CommandPalette open={overlay==="command"} commands={commands} onClose={()=>setOverlay("none")}/>
     <div className={`toast ${toast?"":"hidden"}`} role="status" aria-live="polite">{toast}</div>

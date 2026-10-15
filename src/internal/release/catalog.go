@@ -4,7 +4,7 @@ package release
 
 import "fmt"
 
-const currentVersion = "2.0.1"
+const currentVersion = "2.1.0"
 
 // ChangeGroup collects related user-visible changes within a release.
 type ChangeGroup struct {
@@ -39,6 +39,12 @@ type PageResult struct {
 }
 
 var releases = []Release{
+	{Version: "2.1.0", Date: "2026-10-14", Title: "First public local-only release", Changes: []ChangeGroup{
+		{Category: "Added", Items: []string{"Three supported ways to install: the LanceSandino Homebrew tap with a user-level brew services service, a local-only Docker Compose file, and building from source.", "sessionsift web checks that the local agent is ready and opens the dashboard.", "sessionsift setup mcp previews, applies, verifies and undoes the local MCP configuration for Codex and Claude Code.", "Release archives for macOS Intel and Linux amd64 with SHA-256 checksums and an SPDX software inventory."}},
+		{Category: "Improved", Items: []string{"The dashboard is local-first by default; sharing and remote controls appear only after you opt in.", "Docker Compose keeps the dashboard on 127.0.0.1, mounts transcript folders read-only and needs no cloud services."}},
+		{Category: "Fixed", Items: []string{"MCP tool output schemas now have an object root, so strict clients such as Claude Desktop list and call all ten tools.", "Session-scope checks treat Unicode look-alike JSON keys (such as a long s) as the field the decoder reads, so a scoped request cannot select a different session.", "The optional hosted-bridge client no longer follows HTTP redirects, so signed requests cannot be forwarded to another origin.", "Local backups are written in a private staging folder and only appear once they are owner-only.", "Codex tool-target paths are redacted before they are shortened, so home-folder account names are not kept.", "Release binaries use the patched Go standard library version required by the security scan.", "Updated a web build dependency to address a published source-map parsing vulnerability."}},
+		{Category: "Notes", Items: []string{"Apple Silicon and Linux ARM64 builds are not offered yet.", "macOS binaries are unsigned and unnotarized; checksums verify downloads, not publisher identity.", "The source also contains an optional hosted bridge, remote MCP and client-encrypted sync. They are experimental and not offered or supported as a service in this release."}},
+	}},
 	{Version: "2.0.1", Date: "2026-10-07", Title: "Lower background CPU use", Changes: []ChangeGroup{
 		{Category: "Improved", Items: []string{"Background collection coalesces transcript changes and waits between scans, including when no browser is open.", "Unchanged transcripts use one batched import-manifest read instead of a database query for every file."}},
 		{Category: "Fixed", Items: []string{"Codex heartbeat timestamps no longer trigger full transcript imports; renamed titles and execution metadata refresh without reparsing conversation history."}},

@@ -1,5 +1,5 @@
 /** @module ApiClient @description Fetches local-only SessionSift JSON resources. */
-import type { AnalyticsReport, BridgeStatus, ChangelogPage, ComparePayload, DiagnosticsStatus, HostedInvitation, LinkOffer, OptimizationExperiment, OptimizationOverview, RecommendationState, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession } from "./types";
+import type { AnalyticsReport, BridgeStatus, ChangelogPage, CloudSyncStatus, ComparePayload, DiagnosticsStatus, HostedInvitation, LinkOffer, OptimizationExperiment, OptimizationOverview, RecommendationState, RecoveryOffer, RemoteGrant, RemotePairing, RemoteStatus, Session, SupportOffer, SupportRole, SupportSession, SyncConflict } from "./types";
 
 async function request<T>(path:string):Promise<T>{
   const response=await fetch(path,{headers:{Accept:"application/json"}});
@@ -24,6 +24,19 @@ export const api={
   recordAdoption:(event:"optimize_viewed")=>send("/api/v1/optimization/adoption",{event}),
   diagnostics:()=>request<DiagnosticsStatus>("/api/v1/diagnostics"),
   changelog:(page=1,pageSize=5)=>request<ChangelogPage>(`/api/v1/changelog?page=${page}&page_size=${pageSize}`),
+  syncStatus:()=>request<CloudSyncStatus>("/api/v1/sync"),
+  prepareSync:(selection:{summaries:boolean;findings_notes:boolean;detailed_evidence:boolean})=>send<RecoveryOffer>("/api/v1/sync/prepare",selection),
+  enableSync:(recovery_secret:string,selection:{summaries:boolean;findings_notes:boolean;detailed_evidence:boolean})=>send<CloudSyncStatus>("/api/v1/sync/enable",{recovery_secret,...selection}),
+  recoverSync:(recovery_secret:string,selection:{summaries:boolean;findings_notes:boolean;detailed_evidence:boolean})=>send<CloudSyncStatus>("/api/v1/sync/recover",{recovery_secret,...selection}),
+  runSync:()=>send<{queued:{examined:number;queued:number;bytes:number}}>("/api/v1/sync/run",{}),
+  pauseSync:()=>send("/api/v1/sync/pause",{}),
+  resumeSync:()=>send("/api/v1/sync/resume",{}),
+  disableSync:()=>send("/api/v1/sync/disable",{}),
+  syncConflicts:()=>requestArray<SyncConflict>("/api/v1/sync/conflicts"),
+  resolveSyncConflict:(id:number,resolution:"local"|"remote")=>send("/api/v1/sync/conflicts/resolve",{id,resolution}),
+  deleteCloudSync:(recovery_secret:string)=>send("/api/v1/sync/delete-cloud",{recovery_secret,confirmation:"DELETE CLOUD COPIES"}),
+  removeLocalSync:(recovery_secret:string)=>send("/api/v1/sync/remove-local",{recovery_secret,confirmation:"REMOVE LOCAL SYNC DATA"}),
+  rotateSyncKey:(recovery_secret:string)=>send<RecoveryOffer>("/api/v1/sync/rotate-key",{recovery_secret,confirmation:"ROTATE SYNC KEY"}),
   remoteStatus:()=>request<RemoteStatus>("/api/v1/remote/status"),
   bridge:()=>request<BridgeStatus>("/api/v1/remote/bridge"),
   connectBridge:(url:string,name:string)=>send<BridgeStatus>("/api/v1/remote/bridge/connect",{url,name}),
@@ -32,7 +45,7 @@ export const api={
   supportSessions:()=>requestArray<SupportSession>("/api/v1/remote/support"),
   startSupport:(session_id:string,role:SupportRole,minutes:number)=>send<SupportOffer>("/api/v1/remote/support",{session_id,role,minutes}),
   endSupport:(id:string)=>send<SupportSession>("/api/v1/remote/support/end",{id}),
-  approveOAuthPrincipal:(principal:string)=>send<RemoteGrant>("/api/v1/remote/oauth/grants",{principal,duration_days:14,operations:["session.list","session.get","session.metrics","session.timeline","session.findings","session.compare","turn.get","analysis.patterns","analysis.recurring_corrections","context.recommendations"]}),
+  approveOAuthPrincipal:(principal:string,detailed=false)=>send<RemoteGrant>("/api/v1/remote/oauth/grants",{principal,duration_days:14,operations:detailed?["session.list","session.get","session.metrics","session.timeline","session.findings","session.compare","turn.get","analysis.patterns","analysis.recurring_corrections","context.recommendations"]:["session.list","analysis.patterns","analysis.recurring_corrections","context.recommendations"]}),
   createPairing:()=>send<RemotePairing>("/api/v1/remote/pairings",{}),
   approvePairing:(code:string)=>send<{grant:unknown;token:string}>("/api/v1/remote/pairings/approve",{code,duration_minutes:30}),
   denyPairing:(code:string)=>send("/api/v1/remote/pairings/deny",{code}),

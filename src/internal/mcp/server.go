@@ -87,7 +87,7 @@ var tools = []tool{
 }
 
 func toolDefinition(name, title, description string, operation protocol.Operation, schema map[string]any) tool {
-	return tool{Name: name, Title: title, Description: description, InputSchema: schema, OutputSchema: map[string]any{"oneOf": []map[string]any{{"type": "object"}, {"type": "array"}}}, Annotations: map[string]any{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}, operation: operation}
+	return tool{Name: name, Title: title, Description: description, InputSchema: schema, OutputSchema: map[string]any{"type": "object"}, Annotations: map[string]any{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}, operation: operation}
 }
 
 func requiredSession() map[string]any {
@@ -232,7 +232,7 @@ func (s *Server) call(ctx context.Context, request rpcRequest) rpcResponse {
 	if err != nil {
 		return success(request.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": fmt.Sprintf("encoding result: %v", err)}}, "isError": true})
 	}
-	return success(request.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": string(encoded)}}, "structuredContent": response.Data})
+	return success(request.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": string(encoded)}}, "structuredContent": objectResult(response.Data, encoded)})
 }
 
 func toolByName(name string) (tool, bool) {

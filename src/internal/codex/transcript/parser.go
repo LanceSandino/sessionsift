@@ -438,7 +438,7 @@ func newToolCall(id, sessionID, turnID string, at time.Time, name, arguments str
 	call.ToolTransport, call.ToolServer = toolmeta.Describe(name)
 	if target != "" {
 		call.TargetPathHash = redact.PathHash(target)
-		call.TargetPathDisplay = redact.DisplayPath(target)
+		call.TargetPathDisplay = redact.DisplayPath(redact.Text(target, 0))
 	}
 	if category == "execute" || category == "validation" {
 		call.CommandSignature = commandSignature(redactedArgs)

@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,8 @@ type Handler struct {
 	logger    *slog.Logger
 	mu        sync.Mutex
 	attempts  map[string]attemptWindow
+	syncUses  map[string]attemptWindow
+	syncLimit int
 }
 
 type attemptWindow struct {
@@ -51,7 +54,7 @@ func newHandler(store *Store, verifier accessauth.Verifier, publicURL string, lo
 	}
 	return &Handler{
 		store: store, verifier: verifier, publicURL: strings.TrimRight(publicURL, "/"), logger: logger,
-		attempts: map[string]attemptWindow{},
+		attempts: map[string]attemptWindow{}, syncUses: map[string]attemptWindow{}, syncLimit: syncRequestsPerMinute(),
 	}
 }
 
@@ -316,6 +319,17 @@ func (h *Handler) deviceRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/agent/v1/sync/"):
+		if !syncFeatureEnabled() {
+			writeError(w, http.StatusNotFound, "sync is disabled")
+			return
+		}
+		if !h.allowSyncRequest(deviceID) {
+			w.Header().Set("Retry-After", "60")
+			writeError(w, http.StatusTooManyRequests, "sync fair-use limit exceeded")
+			return
+		}
+		h.syncDeviceRoute(w, r, deviceID, body)
 	case r.Method == http.MethodGet && r.URL.Path == "/agent/v1/tasks/next":
 		task, found, nextErr := h.store.Next(deviceID)
 		if nextErr != nil {
@@ -581,7 +595,20 @@ func (h *Handler) authenticateDevice(w http.ResponseWriter, r *http.Request, bod
 		return "", false
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-SessionSift-Signature"))
-	if err != nil || !ed25519.Verify(key, deviceSignatureMessage(r.Method, r.URL.Path, timestamp, body), signature) {
+	replayNonce := r.Header.Get("X-SessionSift-Nonce")
+	normalizedPath := r.URL.EscapedPath()
+	if r.URL.RawQuery != "" {
+		normalizedPath += "?" + r.URL.Query().Encode()
+	}
+	message := deviceSignatureMessage(r.Method, r.URL.Path, timestamp, body)
+	if replayNonce != "" {
+		message = deviceSignatureMessageV2(r.Method, normalizedPath, timestamp, replayNonce, body)
+	}
+	if strings.HasPrefix(r.URL.Path, "/agent/v1/sync/") && replayNonce == "" {
+		writeError(w, http.StatusUnauthorized, "device authentication failed")
+		return "", false
+	}
+	if err != nil || !ed25519.Verify(key, message, signature) {
 		writeError(w, http.StatusUnauthorized, "device authentication failed")
 		return "", false
 	}
@@ -597,6 +624,147 @@ func deviceSignatureMessage(method, path, timestamp string, body []byte) []byte 
 	return []byte(method + "\n" + path + "\n" + timestamp + "\n" + hex.EncodeToString(digest[:]))
 }
 
+func deviceSignatureMessageV2(method, path, timestamp, nonce string, body []byte) []byte {
+	digest := sha256.Sum256(body)
+	return []byte("sessionsift.device-request.v2\n" + method + "\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + hex.EncodeToString(digest[:]))
+}
+
+func syncFeatureEnabled() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("SESSIONSIFT_SYNC_ENABLED")))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func syncRequestsPerMinute() int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SESSIONSIFT_SYNC_REQUESTS_PER_MINUTE")))
+	if err == nil && value > 0 {
+		return value
+	}
+	return 600
+}
+
+func (h *Handler) allowSyncRequest(deviceID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	if len(h.syncUses) >= 4096 {
+		for source, entry := range h.syncUses {
+			if now.Sub(entry.started) >= time.Minute {
+				delete(h.syncUses, source)
+			}
+		}
+		if _, exists := h.syncUses[deviceID]; !exists && len(h.syncUses) >= 4096 {
+			return false
+		}
+	}
+	window := h.syncUses[deviceID]
+	if window.started.IsZero() || now.Sub(window.started) >= time.Minute {
+		h.syncUses[deviceID] = attemptWindow{started: now, count: 1}
+		return true
+	}
+	if window.count >= h.syncLimit {
+		return false
+	}
+	window.count++
+	h.syncUses[deviceID] = window
+	return true
+}
+
+func (h *Handler) syncDeviceRoute(w http.ResponseWriter, r *http.Request, deviceID string, body []byte) {
+	const prefix = "/agent/v1/sync/objects/"
+	switch {
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/agent/v1/sync/devices/") && strings.HasSuffix(r.URL.Path, "/key"):
+		sourceID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/agent/v1/sync/devices/"), "/key")
+		if sourceID == "" || strings.Contains(sourceID, "/") {
+			writeError(w, http.StatusBadRequest, "invalid sync source device")
+			return
+		}
+		key, err := h.store.SyncDeviceKey(deviceID, sourceID)
+		writeResult(w, http.StatusOK, map[string]any{"device_id": sourceID, "public_key": []byte(key)}, err)
+	case r.Method == http.MethodGet && r.URL.Path == "/agent/v1/sync/changes":
+		cursor, cursorErr := strconv.ParseInt(defaultString(r.URL.Query().Get("cursor"), "0"), 10, 64)
+		limit, limitErr := strconv.Atoi(defaultString(r.URL.Query().Get("limit"), "100"))
+		if cursorErr != nil || limitErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid sync cursor")
+			return
+		}
+		changes, more, err := h.store.SyncChanges(deviceID, cursor, limit)
+		writeResult(w, http.StatusOK, map[string]any{"changes": changes, "more": more}, err)
+	case r.Method == http.MethodGet && r.URL.Path == "/agent/v1/sync/usage":
+		usage, err := h.store.SyncUsage(deviceID)
+		writeResult(w, http.StatusOK, usage, err)
+	case r.Method == http.MethodGet && r.URL.Path == "/agent/v1/sync/workspace":
+		epoch, err := h.store.SyncWorkspaceEpoch(deviceID)
+		writeResult(w, http.StatusOK, map[string]any{"min_epoch": epoch}, err)
+	case r.Method == http.MethodDelete && r.URL.Path == "/agent/v1/sync/workspace":
+		var value struct {
+			Confirmation string `json:"confirmation"`
+		}
+		if !decodeBytes(w, body, &value) {
+			return
+		}
+		if value.Confirmation != "DELETE CLOUD COPIES" {
+			writeError(w, http.StatusBadRequest, "exact cloud deletion confirmation required")
+			return
+		}
+		nextEpoch, err := h.store.DeleteSyncWorkspace(deviceID)
+		writeResult(w, http.StatusOK, map[string]any{"deleted": err == nil, "next_epoch": nextEpoch}, err)
+	case strings.HasPrefix(r.URL.Path, prefix):
+		objectID := strings.TrimPrefix(r.URL.Path, prefix)
+		if objectID == "" || strings.Contains(objectID, "/") || len(objectID) > 160 {
+			writeError(w, http.StatusBadRequest, "invalid sync object id")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			object, err := h.store.GetSyncObject(deviceID, objectID)
+			writeResult(w, http.StatusOK, object, err)
+		case http.MethodPut:
+			expected, err := strconv.ParseUint(defaultString(r.URL.Query().Get("expected_revision"), "0"), 10, 64)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid expected revision")
+				return
+			}
+			var object SyncObject
+			if !decodeBytes(w, body, &object) {
+				return
+			}
+			if object.ObjectID != objectID {
+				writeError(w, http.StatusBadRequest, "sync object id mismatch")
+				return
+			}
+			change, putErr := h.store.PutSyncObject(deviceID, object, expected)
+			status := http.StatusCreated
+			if expected > 0 {
+				status = http.StatusOK
+			}
+			writeResult(w, status, change, putErr)
+		case http.MethodDelete:
+			var value struct {
+				ExpectedRevision uint64 `json:"expected_revision"`
+				Revision         uint64 `json:"revision"`
+				Digest           string `json:"digest"`
+				Signature        []byte `json:"signature"`
+			}
+			if !decodeBytes(w, body, &value) {
+				return
+			}
+			change, err := h.store.DeleteSyncObject(deviceID, objectID, value.ExpectedRevision, value.Revision, value.Digest, value.Signature)
+			writeResult(w, http.StatusOK, change, err)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	default:
+		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func (h *Handler) mcp(w http.ResponseWriter, r *http.Request, principal accessauth.Principal) {
 	target, err := h.store.ResolveMCPTarget(principal.Email)
 	if err != nil {
@@ -604,7 +772,12 @@ func (h *Handler) mcp(w http.ResponseWriter, r *http.Request, principal accessau
 		return
 	}
 	allowed := make(map[protocol.Operation]bool)
-	for _, operation := range protocol.ReadOperations() {
+	operations, err := h.store.GrantOperations(principal.Email, target.DeviceID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	for _, operation := range operations {
 		allowed[operation] = true
 	}
 	executor := relayExecutor{store: h.store, principal: principal.Email, deviceID: target.DeviceID}
@@ -633,6 +806,9 @@ func (e invitationRelayExecutor) Execute(ctx context.Context, request protocol.R
 	if err != nil {
 		return relayFailure(request, "relay_timeout", err)
 	}
+	if _, err := e.store.authorizeInvitation(e.principal, e.invitationID, e.token, request); err != nil {
+		return relayFailure(request, "invite_denied", err)
+	}
 	return response
 }
 
@@ -644,6 +820,11 @@ func (e relayExecutor) Execute(ctx context.Context, request protocol.Request) pr
 	response, err := e.store.Wait(ctx, task.ID, operationTimeout(request.Operation))
 	if err != nil {
 		return relayFailure(request, "relay_timeout", err)
+	}
+	// A grant may expire or be revoked while the workstation computes a response.
+	// Recheck before releasing it; this cannot undo bytes already delivered.
+	if err := e.store.authorize(e.deviceID, e.principal, request.Operation); err != nil {
+		return relayFailure(request, "relay_denied", err)
 	}
 	return response
 }
@@ -743,8 +924,15 @@ func decodeBytes(w http.ResponseWriter, body []byte, target any) bool {
 func writeResult(w http.ResponseWriter, status int, value any, err error) {
 	if err != nil {
 		code := http.StatusBadRequest
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			code = http.StatusGatewayTimeout
+		case errors.Is(err, ErrSyncConflict):
+			code = http.StatusConflict
+		case errors.Is(err, ErrSyncNotFound):
+			code = http.StatusNotFound
+		case errors.Is(err, ErrSyncQuota), errors.Is(err, ErrSyncDisk):
+			code = http.StatusInsufficientStorage
 		}
 		writeError(w, code, err.Error())
 		return

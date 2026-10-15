@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -114,6 +115,13 @@ func ReadOperations() []Operation {
 	}
 }
 
+// HostedDefaultOperations is the least-privilege remote MCP profile. It omits
+// session bodies, timelines, findings, turn excerpts, and comparisons until an
+// owner explicitly grants the detailed profile on the source device.
+func HostedDefaultOperations() []Operation {
+	return []Operation{SessionList, AnalysisPatterns, AnalysisCorrections, ContextRecommendations}
+}
+
 // InvitationOperations returns the exact, deliberately narrow capability set
 // assigned to a hosted single-session invitation role.
 func InvitationOperations(role string) ([]Operation, bool) {
@@ -165,6 +173,13 @@ func (r Request) Validate() error {
 // Go decodes struct fields case-insensitively and keeps the last duplicate, so
 // an ambiguous object could satisfy an exact-key scope check while selecting a
 // different value for execution.
+// foldKey maps a JSON object key to the spelling encoding/json treats as
+// equivalent, including Unicode look-alikes such as U+017F (long s) that
+// strings.ToLower leaves unchanged.
+func foldKey(key string) string {
+	return strings.Map(func(r rune) rune { return unicode.ToLower(unicode.ToUpper(r)) }, key)
+}
+
 func rejectAmbiguousKeys(raw json.RawMessage) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
@@ -198,7 +213,7 @@ func walkValue(decoder *json.Decoder, depth int) error {
 				return errors.New("invalid arguments")
 			}
 			key, _ := keyToken.(string)
-			folded := strings.ToLower(key)
+			folded := foldKey(key)
 			if seen[folded] {
 				return errors.New("arguments repeat a field name")
 			}
@@ -250,7 +265,7 @@ var sessionKeys = map[string]bool{"session_id": true, "a": true, "b": true}
 // spelling the Local Agent's decoder would accept. Non-canonical spellings and
 // ambiguous objects are refused rather than interpreted.
 func SessionScoped(arguments json.RawMessage, sessionID string) bool {
-	if sessionID == "" || len(arguments) == 0 || rejectAmbiguousKeys(arguments) != nil {
+	if sessionID == "" || len(arguments) == 0 || len(arguments) > MaximumArgumentsBytes || rejectAmbiguousKeys(arguments) != nil {
 		return false
 	}
 	var values map[string]any
@@ -262,7 +277,7 @@ func SessionScoped(arguments json.RawMessage, sessionID string) bool {
 		return false
 	}
 	for key, value := range values {
-		folded := strings.ToLower(key)
+		folded := foldKey(key)
 		if !sessionKeys[folded] {
 			continue
 		}

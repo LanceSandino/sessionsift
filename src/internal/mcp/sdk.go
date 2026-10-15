@@ -71,7 +71,7 @@ func newSDKServer(executor Executor, allowed func(protocol.Operation) bool, oaut
 			if err != nil {
 				return nil, err
 			}
-			return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(encoded)}}, StructuredContent: response.Data}, nil
+			return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(encoded)}}, StructuredContent: objectResult(response.Data, encoded)}, nil
 		})
 	}
 	return server

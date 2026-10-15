@@ -191,13 +191,48 @@ func (s *Store) Backup(ctx context.Context, destination string) error {
 		}
 		return fmt.Errorf("backup parent is not a directory: %s", filepath.Dir(destination))
 	}
-	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, destination); err != nil {
+	// Write inside a private staging directory so the snapshot is never
+	// reachable through a traversable parent before its mode is tightened.
+	staging, err := os.MkdirTemp(filepath.Dir(destination), ".backup-pending-")
+	if err != nil {
+		return fmt.Errorf("backup staging: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	if err := os.Chmod(staging, 0o700); err != nil {
+		return fmt.Errorf("secure backup staging: %w", err)
+	}
+	pending := filepath.Join(staging, "backup.db")
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, pending); err != nil {
 		return fmt.Errorf("database backup: %w", err)
 	}
-	if err := os.Chmod(destination, 0o600); err != nil {
+	if err := os.Chmod(pending, 0o600); err != nil {
 		return fmt.Errorf("secure backup permissions: %w", err)
 	}
+	// Link refuses to replace an existing destination, unlike rename.
+	if err := os.Link(pending, destination); err != nil {
+		return fmt.Errorf("publish backup: %w", err)
+	}
 	return nil
+}
+
+// BackupDatabaseFile creates a consistent snapshot before a newer binary opens
+// and migrates an existing database. It refuses symlink sources.
+func BackupDatabaseFile(ctx context.Context, source, destination string) error {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("database must be a regular non-symlink file")
+	}
+	db, err := sql.Open("sqlite", source)
+	if err != nil {
+		return err
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	store := &Store{db: db}
+	return store.Backup(ctx, destination)
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -225,6 +260,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	if err := s.rekeyTurnsBySession(ctx); err != nil {
+		return fmt.Errorf("migration: %w", err)
+	}
+	if err := s.migrateSync(ctx); err != nil {
 		return fmt.Errorf("migration: %w", err)
 	}
 	return nil

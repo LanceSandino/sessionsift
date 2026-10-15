@@ -297,7 +297,7 @@ func TestImportAllCancellationAndClosedStore(t *testing.T) {
 func TestImportSpoolRedactsAndRemovesImportedFiles(t *testing.T) {
 	directory := t.TempDir()
 	spoolFile := filepath.Join(directory, "hook.json")
-	payload := `{"session_id":"live-session","turn_id":"turn-1","hook_event_name":"AfterTool","prompt":"token sk-proj-` + `abcdefghijklmnopqrstuvwxyz","cwd":"/private/repo"}`
+	payload := `{"session_id":"live-session","turn_id":"turn-1","hook_event_name":"AfterTool","prompt":"token sk-` + `proj-abcdefghijklmnopqrstuvwxyz","cwd":"/private/repo"}`
 	if err := os.WriteFile(spoolFile, []byte(payload), 0o600); err != nil {
 		t.Fatal(err)
 	}

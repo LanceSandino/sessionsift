@@ -27,17 +27,8 @@ type storedIdentity struct {
 }
 
 func LoadOrCreateIdentity(path string) (Identity, error) {
-	if body, err := os.ReadFile(path); err == nil {
-		var stored storedIdentity
-		if json.Unmarshal(body, &stored) != nil {
-			return Identity{}, errors.New("invalid device identity")
-		}
-		publicKey, publicErr := base64.RawURLEncoding.DecodeString(stored.PublicKey)
-		privateKey, privateErr := base64.RawURLEncoding.DecodeString(stored.PrivateKey)
-		if publicErr != nil || privateErr != nil || len(publicKey) != ed25519.PublicKeySize || len(privateKey) != ed25519.PrivateKeySize {
-			return Identity{}, errors.New("invalid device identity key")
-		}
-		return Identity{ID: stored.ID, PublicKey: ed25519.PublicKey(publicKey), privateKey: ed25519.PrivateKey(privateKey)}, nil
+	if identity, err := loadIdentity(path); err == nil {
+		return identity, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Identity{}, err
 	}
@@ -52,10 +43,60 @@ func LoadOrCreateIdentity(path string) (Identity, error) {
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return Identity{}, err
 	}
-	if err = os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
+	// Publish only a complete, synced 0600 file. An exclusive open at the final
+	// path would expose an empty/partial key to concurrent CLI/agent startup;
+	// rename would replace another process's identity. A same-directory hard
+	// link atomically installs the completed inode without replacing a winner.
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".device-identity-*")
+	if err != nil {
+		return Identity{}, err
+	}
+	defer os.Remove(temporary.Name())
+	defer temporary.Close()
+	if _, err := temporary.Write(append(body, '\n')); err != nil {
+		return Identity{}, err
+	}
+	if err := temporary.Sync(); err != nil {
+		return Identity{}, err
+	}
+	if err := temporary.Close(); err != nil {
+		return Identity{}, err
+	}
+	if err := os.Link(temporary.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return loadIdentity(path)
+		}
+		return Identity{}, err
+	}
+	if err := os.Remove(temporary.Name()); err != nil {
+		return Identity{}, err
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return Identity{}, err
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
 		return Identity{}, err
 	}
 	return identity, nil
+}
+
+func loadIdentity(path string) (Identity, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return Identity{}, err
+	}
+	var stored storedIdentity
+	if json.Unmarshal(body, &stored) != nil {
+		return Identity{}, errors.New("invalid device identity")
+	}
+	publicKey, publicErr := base64.RawURLEncoding.DecodeString(stored.PublicKey)
+	privateKey, privateErr := base64.RawURLEncoding.DecodeString(stored.PrivateKey)
+	if publicErr != nil || privateErr != nil || len(publicKey) != ed25519.PublicKeySize || len(privateKey) != ed25519.PrivateKeySize {
+		return Identity{}, errors.New("invalid device identity key")
+	}
+	return Identity{ID: stored.ID, PublicKey: ed25519.PublicKey(publicKey), privateKey: ed25519.PrivateKey(privateKey)}, nil
 }
 
 func (i Identity) Sign(payload []byte) []byte { return ed25519.Sign(i.privateKey, payload) }

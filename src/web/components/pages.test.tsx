@@ -107,21 +107,31 @@ describe("diagnostics",()=>{
 });
 
 describe("connection workspace",()=>{
+  it("defaults to local stdio guidance without activating remote connection surfaces",()=>{
+    vi.stubGlobal("fetch",vi.fn(()=>Promise.reject(new Error("not expected"))));
+    render(<Connections/>);
+    expect(screen.getByRole("heading",{name:"Local tools. No account required."})).toBeInTheDocument();
+    expect(screen.queryByRole("heading",{name:"Choose the access method"})).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("links to the bridge support page when this device is connected",async()=>{
     vi.stubGlobal("fetch",vi.fn((input:RequestInfo|URL)=>{const path=String(input);if(path.endsWith("/bridge"))return json({connected:true,url:"https://bridge.example",device_id:"d"});if(path.endsWith("/status"))return json({device_id:"d",pending_pairings:[],connections:[],audit:[]});return json([])}));
     render(<Connections/>);
+    fireEvent.click(screen.getByRole("checkbox",{name:"Show experimental remote features"}));
     expect(await screen.findByRole("link",{name:/bridge.example\/support/})).toHaveAttribute("href","https://bridge.example/support");
   });
 
   it("explains support-code entry when no bridge is known",async()=>{
     vi.stubGlobal("fetch",vi.fn(()=>Promise.reject(new Error("offline"))));
     render(<Connections/>);
+    fireEvent.click(screen.getByRole("checkbox",{name:"Show experimental remote features"}));
     expect(await screen.findByText(/on the bridge the other person uses/)).toBeInTheDocument();
   });
 
   it("explains which access method to use and tells manual reviewers the portal is not the invitation flow",async()=>{
     vi.stubGlobal("fetch",vi.fn(()=>Promise.reject(new Error("offline"))));
     render(<Connections/>);
+    fireEvent.click(screen.getByRole("checkbox",{name:"Show experimental remote features"}));
     expect(await screen.findByRole("heading",{name:"Choose the access method"})).toBeInTheDocument();
     expect(screen.getByText(/Recommended for people/)).toBeInTheDocument();
     expect(screen.getByText(/Email invitations and support codes are the normal way/)).toBeInTheDocument();

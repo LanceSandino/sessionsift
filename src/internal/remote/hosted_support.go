@@ -71,23 +71,28 @@ func CompleteOwnerLink(ctx context.Context, client *http.Client, config HostedCo
 	if err != nil {
 		return config, false, err
 	}
-	if device.Owner == "" || device.Owner == config.Owner {
+	if device.Owner == "" {
 		return config, false, nil
 	}
-	if config.Owner != "" {
+	if config.Owner != "" && device.Owner != config.Owner {
 		return config, false, errors.New("bridge reports a different owner than this device recorded; disconnect and re-register")
 	}
-	grant, err := manager.ApproveOAuthPrincipal(device.Owner, protocol.ReadOperations(), 30*24*time.Hour)
-	if err != nil {
-		return config, false, err
-	}
+	ownerWasEmpty := config.Owner == ""
 	config.Owner = device.Owner
-	if err = RegisterHostedGrant(ctx, client, config, identity, device.Owner, grant.Operations, grant.ExpiresAt); err != nil {
-		_ = manager.Revoke(grant.ID)
-		config.Owner = ""
-		return config, false, err
+	changed := config.WorkspaceID != device.WorkspaceID || config.Name != device.Name || ownerWasEmpty
+	config.WorkspaceID, config.Name = device.WorkspaceID, device.Name
+	if ownerWasEmpty {
+		grant, grantErr := manager.ApproveOAuthPrincipal(device.Owner, protocol.ReadOperations(), 30*24*time.Hour)
+		if grantErr != nil {
+			return config, false, grantErr
+		}
+		if err = RegisterHostedGrant(ctx, client, config, identity, device.Owner, grant.Operations, grant.ExpiresAt); err != nil {
+			_ = manager.Revoke(grant.ID)
+			config.Owner = ""
+			return config, false, err
+		}
 	}
-	return config, true, nil
+	return config, changed, nil
 }
 
 // RegisterHostedSupport publishes the hash of a support code this device issued.

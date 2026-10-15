@@ -78,6 +78,9 @@ func remoteRoute(store *storage.Store, manager *remote.Manager, identity remote.
 		if !decodeRemote(w, r, &body) {
 			return
 		}
+		if len(body.Operations) == 0 {
+			body.Operations = protocol.HostedDefaultOperations()
+		}
 		grant, err := manager.ApproveOAuthPrincipal(body.Principal, body.Operations, time.Duration(body.DurationDays)*24*time.Hour)
 		remoteWrite(w, http.StatusCreated, grant, err)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote/pairings":

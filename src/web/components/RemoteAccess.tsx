@@ -9,6 +9,7 @@ export function RemoteAccess(){
   const[pairing,setPairing]=useState<RemotePairing>();
   const[token,setToken]=useState("");
   const[principal,setPrincipal]=useState("");
+  const[detailed,setDetailed]=useState(false);
   const[error,setError]=useState("");
   const report=(value:unknown)=>setError(value instanceof Error?value.message:String(value));
   const refresh=useCallback(()=>api.remoteStatus().then(setStatus).catch(report),[]);
@@ -17,14 +18,14 @@ export function RemoteAccess(){
   const approve=(code:string)=>api.approvePairing(code).then(value=>{setToken(value.token);return refresh()}).catch(report);
   const deny=(code:string)=>api.denyPairing(code).then(refresh).catch(report);
   const disconnect=(connectionId:string,grantId:string)=>api.disconnect(connectionId).then(()=>api.revokeGrant(grantId)).then(refresh).catch(report);
-  const approveOAuth=(event:React.FormEvent)=>{event.preventDefault();api.approveOAuthPrincipal(principal).then(()=>{setPrincipal("");return refresh()}).catch(report)};
+  const approveOAuth=(event:React.FormEvent)=>{event.preventDefault();api.approveOAuthPrincipal(principal,detailed).then(()=>{setPrincipal("");setDetailed(false);return refresh()}).catch(report)};
   const oauthGrants=status?.oauth_grants||[];
   return <>
     {error&&<div className="evidence-banner" role="alert">{error}</div>}
     <section className="device-card" aria-label="ChatGPT and Claude MCP">
       <div className="row between"><h3><Icon name="shield"/>ChatGPT and Claude MCP</h3><span className={`badge ${status?.oauth_configured?"good":"warn"}`}>{status?.oauth_configured?"Origin verifier ready":"Origin config needed"}</span></div>
       <p>Cloudflare Managed OAuth authenticates the person at <code>/mcp</code>; this device independently approves which identity can read SessionSift. A support grant never becomes an MCP route.</p>
-      <form className="form-grid" onSubmit={approveOAuth}><label>Approved Cloudflare identity<input className="field" aria-label="OAuth identity email" type="email" value={principal} placeholder="you@example.com" onChange={event=>setPrincipal(event.target.value)}/></label><button type="submit" className="button primary" disabled={!principal.trim()}>Approve MCP access</button></form>
+      <form className="form-grid" onSubmit={approveOAuth}><label>Approved Cloudflare identity<input className="field" aria-label="OAuth identity email" type="email" value={principal} placeholder="you@example.com" onChange={event=>setPrincipal(event.target.value)}/></label><label><input type="checkbox" checked={detailed} onChange={event=>setDetailed(event.target.checked)}/> Also allow session bodies, timelines, findings, comparisons, and prompt/tool excerpts</label><small>{detailed?"Detailed access is explicitly enabled for this identity.":"Default access is limited to bounded lists and aggregate analysis."}</small><button type="submit" className="button primary" disabled={!principal.trim()}>Approve MCP access</button></form>
       {oauthGrants.length?oauthGrants.map(grant=><div className="list-row" key={grant.id}><div><b>{grant.principal||grant.reviewer}</b><small>{grant.operations.length} read capabilities · expires {new Date(grant.expires_at).toLocaleString()}</small></div><button type="button" className="button danger" aria-label={`Revoke ${grant.principal||grant.reviewer}`} onClick={()=>api.revokeGrant(grant.id).then(refresh).catch(report)}>Revoke</button></div>):<p className="list-empty">No MCP identity is approved.</p>}
     </section>
     <section className="device-card" aria-label="Local pairing">

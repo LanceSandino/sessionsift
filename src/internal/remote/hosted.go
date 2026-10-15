@@ -4,6 +4,7 @@ package remote
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -25,10 +26,11 @@ import (
 // HostedConfig records this device's bridge registration. Owner is empty
 // until an owner links the device by entering a code it showed.
 type HostedConfig struct {
-	URL      string `json:"url"`
-	DeviceID string `json:"device_id"`
-	Owner    string `json:"owner,omitempty"`
-	Name     string `json:"name,omitempty"`
+	URL         string `json:"url"`
+	DeviceID    string `json:"device_id"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+	Name        string `json:"name,omitempty"`
 }
 
 type HostedInvitation struct {
@@ -195,7 +197,7 @@ func RegisterHosted(ctx context.Context, client *http.Client, bridgeURL, name st
 	if device.ID != identity.ID {
 		return HostedConfig{}, errors.New("bridge returned an unexpected device identity")
 	}
-	return HostedConfig{URL: strings.TrimRight(parsed.String(), "/"), DeviceID: device.ID, Owner: device.Owner, Name: device.Name}, nil
+	return HostedConfig{URL: strings.TrimRight(parsed.String(), "/"), DeviceID: device.ID, WorkspaceID: device.WorkspaceID, Owner: device.Owner, Name: device.Name}, nil
 }
 
 func RegisterHostedGrant(ctx context.Context, client *http.Client, config HostedConfig, identity Identity, principal string, operations []protocol.Operation, expiresAt time.Time) error {
@@ -342,12 +344,28 @@ func signedHostedRequest(ctx context.Context, client *http.Client, config Hosted
 	}
 	request.Header.Set("Content-Type", "application/json")
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	nonceBytes := make([]byte, 16)
+	if _, err = rand.Read(nonceBytes); err != nil {
+		return nil, err
+	}
+	replayNonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	digest := sha256.Sum256(body)
-	message := []byte(method + "\n" + path + "\n" + timestamp + "\n" + hex.EncodeToString(digest[:]))
+	normalizedPath := request.URL.EscapedPath()
+	if request.URL.RawQuery != "" {
+		normalizedPath += "?" + request.URL.Query().Encode()
+	}
+	message := []byte("sessionsift.device-request.v2\n" + method + "\n" + normalizedPath + "\n" + timestamp + "\n" + replayNonce + "\n" + hex.EncodeToString(digest[:]))
 	request.Header.Set("X-SessionSift-Device", identity.ID)
 	request.Header.Set("X-SessionSift-Timestamp", timestamp)
+	request.Header.Set("X-SessionSift-Nonce", replayNonce)
 	request.Header.Set("X-SessionSift-Signature", base64.RawURLEncoding.EncodeToString(identity.Sign(message)))
 	return hostedClient(client).Do(request)
+}
+
+// SignedHostedRequest sends a device-authenticated request through the same
+// replay-protected boundary used by polling, invitations, and encrypted sync.
+func SignedHostedRequest(ctx context.Context, client *http.Client, config HostedConfig, identity Identity, method, path string, body []byte) (*http.Response, error) {
+	return signedHostedRequest(ctx, client, config, identity, method, path, body)
 }
 
 func validateBridgeURL(value string) (*url.URL, error) {
@@ -359,11 +377,21 @@ func validateBridgeURL(value string) (*url.URL, error) {
 	return parsed, nil
 }
 
+// hostedClient never follows redirects: a redirect could carry the
+// registration body or signed device headers to a different origin.
 func hostedClient(client *http.Client) *http.Client {
+	return withoutRedirects(client, 25*time.Second)
+}
+
+// withoutRedirects returns a copy of client (or a new one with timeout) that
+// returns redirect responses to the caller instead of following them.
+func withoutRedirects(client *http.Client, timeout time.Duration) *http.Client {
+	copied := http.Client{Timeout: timeout}
 	if client != nil {
-		return client
+		copied = *client
 	}
-	return &http.Client{Timeout: 25 * time.Second}
+	copied.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &copied
 }
 
 func hostedResponseError(response *http.Response) error {

@@ -1,0 +1,146 @@
+name: Release
+# Run from main after updating VERSION, CHANGELOG.md, package files and the in-app
+# catalog. Validates natively, builds reproducible archives, publishes the GitHub
+# release and attaches the generated Homebrew formula for the tap update.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  version:
+    name: Check release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require main and one agreed version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          python3 scripts/release.py check
+          version=$(python3 scripts/release.py version)
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$version is already released; bump VERSION first" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Test and package (${{ matrix.id }})
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - id: linux-amd64
+            runner: ubuntu-24.04
+            target: linux/amd64
+          - id: darwin-amd64
+            runner: macos-15-intel
+            target: darwin/amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '26.9.0'
+          cache: npm
+      - name: Full test suite
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+      - name: Package and smoke-test the native archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGETS: ${{ matrix.target }}
+          OUTPUT_DIR: ${{ runner.temp }}/candidate
+        run: |
+          bash scripts/package.sh
+          mv "$OUTPUT_DIR/SHA256SUMS" "$OUTPUT_DIR/SHA256SUMS-${{ matrix.id }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: candidate-${{ matrix.id }}
+          path: ${{ runner.temp }}/candidate
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish v${{ needs.version.outputs.version }}
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: candidate-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - name: Verify native archives and combine checksums
+        env:
+          RELEASE: ${{ runner.temp }}/release
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, tarfile
+          root = pathlib.Path(os.environ['RELEASE']); version = os.environ['VERSION']
+          targets = {'linux-amd64': 'linux/amd64', 'darwin-amd64': 'darwin/amd64'}
+          names = []
+          for ident, target in targets.items():
+              name = f"sessionsift_{version}_{target.replace('/', '_')}.tar.gz"
+              records = dict(reversed(line.split('  ', 1)) for line in (root / f'SHA256SUMS-{ident}').read_text().splitlines())
+              digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
+              if records.get(name) != digest:
+                  raise SystemExit(f'checksum mismatch for {name}')
+              with tarfile.open(root / name) as archive:
+                  meta = json.load(archive.extractfile(f'{name[:-7]}/BUILD-METADATA.json'))
+              if meta.get('version') != version or meta.get('target') != target or meta.get('execution') != 'NATIVE_OFFLINE_SMOKE_PASS':
+                  raise SystemExit(f'{name} was not smoke-tested natively')
+              names.append(name)
+          sbom = f'sessionsift_{version}.spdx.json'
+          names.append(sbom)
+          (root / 'SHA256SUMS').write_text(''.join(f"{hashlib.sha256((root / n).read_bytes()).hexdigest()}  {n}\n" for n in sorted(names)))
+          for extra in root.glob('SHA256SUMS-*'):
+              extra.unlink()
+          for extra in root.glob('*.tar.gz'):
+              if extra.name not in names: extra.unlink()
+          PY
+          cat "$RELEASE/SHA256SUMS"
+      - name: Generate Homebrew formula
+        run: python3 scripts/homebrew.py --dist-dir "$RUNNER_TEMP/release" --output "$RUNNER_TEMP/homebrew/sessionsift.rb"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release.py notes --output "$RUNNER_TEMP/notes.md"
+          prerelease=()
+          case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "SessionSift $VERSION" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}" \
+            "$RUNNER_TEMP"/release/sessionsift_* "$RUNNER_TEMP/release/SHA256SUMS" \
+            "$RUNNER_TEMP/homebrew/sessionsift.rb"

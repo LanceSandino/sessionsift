@@ -24,7 +24,7 @@ func TestChangelogEndpointPaginatesAndRejectsInvalidPages(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
 	}
-	if page.CurrentVersion != "2.0.1" || len(page.Releases) != 1 || !page.HasNext {
+	if page.CurrentVersion != "2.1.0" || len(page.Releases) != 1 || !page.HasNext {
 		t.Fatalf("unexpected page: %#v", page)
 	}
 

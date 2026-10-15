@@ -27,7 +27,7 @@ import (
 
 func TestVersionSetupAndUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "2.0.1") {
+	if code := Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "2.1.0") {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 	out.Reset()

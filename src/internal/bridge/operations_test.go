@@ -8,18 +8,22 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	protocol "github.com/LanceSandino/sessionsift/src/internal/protocol/v1"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestQueueAndEnrollmentBudgetsAreBounded(t *testing.T) {
+	t.Run("CancellationCleanup", runWaitCancellationCleanup)
 	s, err := Open(filepath.Join(t.TempDir(), "bridge.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -228,4 +232,305 @@ func TestRegistrationRequiresPrivateKeyPossession(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("missing proof=%d", response.Code)
 	}
+}
+
+func waitCleanupFixture(t *testing.T) (*Store, Device, Task, Task, ed25519.PrivateKey) {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "synthetic-bridge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := testOwnedDevice(t, s, "synthetic@example.invalid", "Synthetic Cancellation", public)
+	if _, err := s.RegisterGrant(d.ID, "synthetic@example.invalid", []protocol.Operation{protocol.SessionList}, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	submit := func(id string) Task {
+		task, err := s.Submit("synthetic@example.invalid", d.ID, protocol.Request{Version: 1, RequestID: id, Operation: protocol.SessionList, Arguments: json.RawMessage(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	return s, d, submit("cancel-target"), submit("unrelated-control"), private
+}
+
+func waitCleanupSnapshot(t *testing.T, s *Store, other Task) string {
+	t.Helper()
+	// Snapshot every column, including exact encrypted task and public key bytes;
+	// synthetic row values stay local and are never printed on failure.
+	var snapshot []json.RawMessage
+	for _, query := range []string{
+		`SELECT * FROM tasks WHERE id=?`,
+		`SELECT * FROM devices ORDER BY id`,
+		`SELECT * FROM grants ORDER BY device_id,principal`,
+		`SELECT * FROM bridge_audit ORDER BY id`,
+	} {
+		var args []any
+		if strings.Contains(query, "WHERE id=?") {
+			args = []any{other.ID}
+		}
+		rows, err := s.db.Query(query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			values := make([]any, len(columns))
+			targets := make([]any, len(columns))
+			for i := range values {
+				targets[i] = &values[i]
+			}
+			if err := rows.Scan(targets...); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(values)
+			if err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			snapshot = append(snapshot, encoded)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func waitCleanupAssert(t *testing.T, s *Store, d Device, target, other Task, before string) {
+	t.Helper()
+	var count int
+	if err := s.db.QueryRow(`SELECT count(*) FROM tasks WHERE id=?`, target.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("canceled task retained: count=%d", count)
+	}
+	if got := waitCleanupSnapshot(t, s, other); got != before {
+		t.Error("unrelated task, device, grant, or audit changed")
+	}
+	next, found, err := s.Next(d.ID)
+	if err != nil || !found || next.ID != other.ID {
+		t.Fatalf("claim = %q, %v, %v; want unrelated task", next.ID, found, err)
+	}
+	if _, found, err := s.Next(d.ID); err != nil || found {
+		t.Fatalf("canceled task remains claimable: found=%v err=%v", found, err)
+	}
+}
+
+func awaitWaitPoll(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		buffer := make([]byte, 64<<10)
+		for _, block := range strings.Split(string(buffer[:runtime.Stack(buffer, true)]), "\n\n") {
+			lines := strings.Split(block, "\n")
+			if len(lines) > 1 && strings.Contains(lines[0], "[select]") && strings.Contains(lines[1], "bridge.(*Store).Wait(") {
+				return
+			}
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("Wait did not enter its polling select")
+}
+
+func runWaitCancellationCleanup(t *testing.T) {
+	for _, mode := range []string{"already-canceled", "already-expired", "query-canceled", "query-deadline", "poll-canceled", "poll-deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			s, d, target, other, _ := waitCleanupFixture(t)
+			before := waitCleanupSnapshot(t, s, other)
+			ctx, cancel := context.WithCancel(context.Background())
+			want := error(context.Canceled)
+			if strings.Contains(mode, "expired") || strings.Contains(mode, "deadline") {
+				cancel()
+				duration := 300 * time.Millisecond
+				if mode == "already-expired" {
+					duration = -time.Second
+				}
+				ctx, cancel = context.WithTimeout(context.Background(), duration)
+				want = context.DeadlineExceeded
+			}
+			defer cancel()
+			if mode == "already-canceled" {
+				cancel()
+			}
+			var release func()
+			if strings.HasPrefix(mode, "query-") {
+				s.db.SetMaxOpenConns(1)
+				conn, err := s.db.Conn(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				release = func() { _ = conn.Close() }
+				defer release()
+			}
+			prior := s.db.Stats().WaitCount
+			done := make(chan error, 1)
+			go func() { _, err := s.Wait(ctx, target.ID, 2*time.Second); done <- err }()
+			if release != nil {
+				limit := time.Now().Add(time.Second)
+				for s.db.Stats().WaitCount == prior && time.Now().Before(limit) {
+					runtime.Gosched()
+				}
+				if s.db.Stats().WaitCount == prior {
+					t.Fatal("Wait did not wait for SQL connection")
+				}
+			} else if strings.HasPrefix(mode, "poll-") {
+				awaitWaitPoll(t)
+			}
+			if strings.HasSuffix(mode, "canceled") {
+				cancel()
+			}
+			if release != nil {
+				<-ctx.Done()
+				release()
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, want) {
+					t.Fatalf("Wait error=%v, want %v", err, want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Wait did not return after cancellation")
+			}
+			waitCleanupAssert(t, s, d, target, other, before)
+		})
+	}
+	t.Run("healthy-completion", func(t *testing.T) {
+		s, d, target, other, private := waitCleanupFixture(t)
+		claimed, found, err := s.Next(d.ID)
+		if err != nil || !found || claimed.ID != target.ID {
+			t.Fatalf("claim: %v %v", found, err)
+		}
+		response := protocol.Response{Version: 1, RequestID: target.Request.RequestID, Status: protocol.StatusOK, Data: map[string]any{"synthetic": true}}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Complete(d.ID, target.ID, encoded, ed25519.Sign(private, encoded)); err != nil {
+			t.Fatal(err)
+		}
+		before := waitCleanupSnapshot(t, s, other)
+		got, err := s.Wait(context.Background(), target.ID, time.Second)
+		if err != nil || !reflect.DeepEqual(got, response) {
+			t.Fatalf("healthy response=%+v err=%v", got, err)
+		}
+		waitCleanupAssert(t, s, d, target, other, before)
+	})
+	t.Run("unrelated-active-waiter", func(t *testing.T) {
+		s, d, target, other, private := waitCleanupFixture(t)
+		before := waitCleanupSnapshot(t, s, other)
+		type result struct {
+			response protocol.Response
+			err      error
+		}
+		done := make(chan result, 1)
+		go func() {
+			response, err := s.Wait(context.Background(), other.ID, 2*time.Second)
+			done <- result{response, err}
+		}()
+		awaitWaitPoll(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := s.Wait(ctx, target.ID, time.Second); !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+		if waitCleanupSnapshot(t, s, other) != before {
+			t.Fatal("canceled Wait changed healthy waiter's task or authorization")
+		}
+		claimed, found, err := s.Next(d.ID)
+		if err != nil || !found || claimed.ID != other.ID {
+			t.Fatalf("healthy claim found=%v err=%v", found, err)
+		}
+		response := protocol.Response{Version: 1, RequestID: other.Request.RequestID, Status: protocol.StatusOK, Data: map[string]any{"synthetic": true}}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Complete(d.ID, other.ID, encoded, ed25519.Sign(private, encoded)); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case got := <-done:
+			if got.err != nil || !reflect.DeepEqual(got.response, response) {
+				t.Fatalf("unrelated healthy Wait error=%v", got.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("healthy Wait did not complete")
+		}
+		if _, found, err := s.Next(d.ID); err != nil || found {
+			t.Fatalf("canceled task claimable: found=%v err=%v", found, err)
+		}
+	})
+	t.Run("cleanup-storage-unavailable-is-bounded", func(t *testing.T) {
+		s, _, target, other, _ := waitCleanupFixture(t)
+		before := waitCleanupSnapshot(t, s, other)
+		s.db.SetMaxOpenConns(1)
+		conn, err := s.db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		start := time.Now()
+		_, err = s.Wait(ctx, target.ID, time.Second)
+		elapsed := time.Since(start)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("original cancellation lost: %v", err)
+		}
+		if elapsed < 800*time.Millisecond || elapsed > 2*time.Second {
+			t.Fatalf("cleanup bound duration=%s", elapsed)
+		}
+		_ = conn.Close()
+		var count int
+		if err := s.db.QueryRow(`SELECT count(*) FROM tasks WHERE id=?`, target.ID).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("unavailable cleanup should retain task: count=%d err=%v", count, err)
+		}
+		if waitCleanupSnapshot(t, s, other) != before {
+			t.Error("unavailable cleanup changed unrelated state")
+		}
+	})
+	t.Run("ordinary-query-error-preserved", func(t *testing.T) {
+		s, _, target, other, _ := waitCleanupFixture(t)
+		before := waitCleanupSnapshot(t, s, other)
+		path := s.dbPath
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		_, err := s.Wait(context.Background(), target.ID, time.Second)
+		if err == nil || !strings.Contains(err.Error(), "database is closed") || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ordinary SQL error changed: %v", err)
+		}
+		reopened, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.Close()
+		var count int
+		if err := reopened.db.QueryRow(`SELECT count(*) FROM tasks WHERE id=?`, target.ID).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("ordinary error removed task: count=%d err=%v", count, err)
+		}
+		if waitCleanupSnapshot(t, reopened, other) != before {
+			t.Error("ordinary error changed unrelated state")
+		}
+	})
 }

@@ -678,6 +678,15 @@ func (m *Manager) Annotations(sessionID string) []Annotation {
 	}
 	return values
 }
+
+// AllAnnotations returns a copy of the owner's redacted note records for an
+// explicitly enabled encrypted-sync adapter. Grants, audit, and secrets remain excluded.
+func (m *Manager) AllAnnotations() []Annotation {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncLocked()
+	return append([]Annotation(nil), m.state.Annotations...)
+}
 func (m *Manager) AddReview(sessionID, reviewer, status, summary string) (Review, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -701,6 +710,14 @@ func (m *Manager) Reviews(sessionID string) []Review {
 		}
 	}
 	return values
+}
+
+// AllReviews returns a copy of redacted review decisions for optional encrypted sync.
+func (m *Manager) AllReviews() []Review {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncLocked()
+	return append([]Review(nil), m.state.Reviews...)
 }
 func (m *Manager) pairingIndex(code string) int {
 	for index := range m.state.Pairings {

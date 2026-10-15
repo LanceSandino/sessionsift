@@ -29,11 +29,15 @@ import (
 const (
 	enrollmentLifetime = 10 * time.Minute
 	claimLifetime      = 30 * time.Second
+	waitCleanupTimeout = time.Second
 )
 
 type Store struct {
-	db     *sql.DB
-	cipher *envelopeCipher
+	db              *sql.DB
+	cipher          *envelopeCipher
+	dbPath          string
+	syncLimits      SyncLimits
+	maintenanceLock *os.File
 }
 
 type Workspace struct {
@@ -100,6 +104,32 @@ type Task struct {
 }
 
 func Open(path string) (*Store, error) {
+	lock, err := acquireMaintenanceLock(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = os.Lstat(path + ".rotation-journal"); !os.IsNotExist(err) {
+		lock.Close()
+		return nil, errors.New("bridge KEK cutover requires explicit kek-recover before startup")
+	}
+	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+		lock.Close()
+		return nil, errors.New("bridge database must be a regular file, not a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		lock.Close()
+		return nil, err
+	}
+	store, err := openBridgeStore(path)
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	store.maintenanceLock = lock
+	return store, nil
+}
+
+// Caller owns the maintenance lock; stage/backup stores are not live services.
+func openBridgeStore(path string) (*Store, error) {
 	envelope, err := loadOrCreateBridgeCipher(path)
 	if err != nil {
 		return nil, err
@@ -109,7 +139,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db, cipher: envelope}
+	store := &Store{db: db, cipher: envelope, dbPath: path, syncLimits: defaultSyncLimits}
 	if err = store.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -129,7 +159,14 @@ func Open(path string) (*Store, error) {
 	return store, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if s.maintenanceLock != nil {
+		err = errors.Join(err, s.maintenanceLock.Close())
+		s.maintenanceLock = nil
+	}
+	return err
+}
 
 func (s *Store) Health(ctx context.Context) error {
 	if err := s.db.PingContext(ctx); err != nil {
@@ -221,6 +258,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.migrateConnections(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateSync(ctx); err != nil {
 		return err
 	}
 	indexes := []string{
@@ -674,6 +714,24 @@ func (s *Store) RevokeGrant(deviceID, principal string) error {
 	return err
 }
 
+func (s *Store) GrantOperations(principal, deviceID string) ([]protocol.Operation, error) {
+	principal, err := normalizeEmail(principal)
+	if err != nil {
+		return nil, err
+	}
+	var encoded []byte
+	err = s.db.QueryRow(`SELECT operations_json FROM grants WHERE device_id=? AND principal=? AND revoked_at IS NULL AND expires_at>?`,
+		deviceID, principal, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&encoded)
+	if err != nil {
+		return nil, errors.New("active local grant required")
+	}
+	var operations []protocol.Operation
+	if json.Unmarshal(encoded, &operations) != nil {
+		return nil, errors.New("invalid stored grant")
+	}
+	return validateOperations(operations)
+}
+
 func (s *Store) DevicesFor(principal string) ([]Device, error) {
 	principal, err := normalizeEmail(principal)
 	if err != nil {
@@ -1112,6 +1170,10 @@ func (s *Store) Wait(ctx context.Context, taskID string, timeout time.Duration) 
 			return protocol.Response{}, errors.New("task not found")
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				s.removeCanceledTask(taskID)
+				return protocol.Response{}, ctx.Err()
+			}
 			return protocol.Response{}, err
 		}
 		if status == "complete" {
@@ -1128,11 +1190,19 @@ func (s *Store) Wait(ctx context.Context, taskID string, timeout time.Duration) 
 		}
 		select {
 		case <-ctx.Done():
-			_, _ = s.db.Exec(`DELETE FROM tasks WHERE id=?`, taskID)
+			s.removeCanceledTask(taskID)
 			return protocol.Response{}, ctx.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+// removeCanceledTask uses a separate bounded context: the request context is
+// already canceled, while unavailable storage must not prevent Wait returning.
+func (s *Store) removeCanceledTask(taskID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), waitCleanupTimeout)
+	defer cancel()
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM tasks WHERE id=?`, taskID)
 }
 
 func (s *Store) authorize(deviceID, principal string, operation protocol.Operation) error {

@@ -119,6 +119,12 @@ func (r *HostedRuntime) current() (HostedConfig, error) {
 	return *r.config, nil
 }
 
+// CurrentConfig returns a copy of the enrolled bridge binding for local
+// subsystems such as encrypted sync. It contains routing identity, never keys.
+func (r *HostedRuntime) CurrentConfig() (HostedConfig, error) {
+	return r.current()
+}
+
 // Connect registers with a bridge, saves the registration and starts polling.
 func (r *HostedRuntime) Connect(ctx context.Context, bridgeURL, name string) (RuntimeStatus, error) {
 	name = strings.TrimSpace(name)

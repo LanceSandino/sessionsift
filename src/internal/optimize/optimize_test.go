@@ -65,11 +65,50 @@ func TestBuildOverviewKeepsExperimentRunningUntilFollowupExists(t *testing.T) {
 }
 
 func TestValidationRejectsUnknownStatesAndMissingBaseline(t *testing.T) {
-	if RecommendationState("unknown").Valid() {
-		t.Fatal("unknown recommendation state accepted")
+	for _, state := range []RecommendationState{RecommendationProposed, RecommendationAccepted, RecommendationApplied, RecommendationDismissed, RecommendationMeasured} {
+		if !state.Valid() {
+			t.Fatalf("valid recommendation state rejected: %q", state)
+		}
 	}
-	if err := (Experiment{Title: "x"}).Validate(); err == nil {
-		t.Fatal("missing baseline accepted")
+	for _, decision := range []RecommendationDecision{
+		{State: RecommendationProposed},
+		{RecommendationID: strings.Repeat("x", 121), State: RecommendationProposed},
+		{RecommendationID: "valid", State: "unknown"},
+	} {
+		if err := decision.Validate(); err == nil {
+			t.Fatalf("invalid decision accepted: %+v", decision)
+		}
+	}
+	if err := (RecommendationDecision{RecommendationID: "valid", State: RecommendationApplied}).Validate(); err != nil {
+		t.Fatalf("valid decision rejected: %v", err)
+	}
+
+	valid := Experiment{ID: "experiment", Title: "Try a checklist", BaselineSessionID: "before", Status: ExperimentRunning}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid experiment rejected: %v", err)
+	}
+	invalid := []Experiment{
+		{Title: valid.Title, BaselineSessionID: valid.BaselineSessionID, Status: valid.Status},
+		{ID: valid.ID, BaselineSessionID: valid.BaselineSessionID, Status: valid.Status},
+		{ID: valid.ID, Title: valid.Title, Hypothesis: strings.Repeat("x", 501), BaselineSessionID: valid.BaselineSessionID, Status: valid.Status},
+		{ID: valid.ID, Title: valid.Title, Status: valid.Status},
+		{ID: valid.ID, Title: valid.Title, BaselineSessionID: "same", FollowupSessionID: "same", Status: valid.Status},
+		{ID: valid.ID, Title: valid.Title, BaselineSessionID: valid.BaselineSessionID, Status: "unknown"},
+		{ID: valid.ID, Title: valid.Title, BaselineSessionID: valid.BaselineSessionID, Status: ExperimentMeasured},
+	}
+	for _, experiment := range invalid {
+		if err := experiment.Validate(); err == nil {
+			t.Fatalf("invalid experiment accepted: %+v", experiment)
+		}
+	}
+
+	for _, event := range []AdoptionEvent{AdoptionOptimizeViewed, AdoptionExperimentsCreated, AdoptionRecommendationsChanged, AdoptionReportsExported} {
+		if !event.Valid() {
+			t.Fatalf("valid adoption event rejected: %q", event)
+		}
+	}
+	if AdoptionEvent("unknown").Valid() {
+		t.Fatal("unknown adoption event accepted")
 	}
 }
 

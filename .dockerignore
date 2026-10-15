@@ -3,6 +3,7 @@
 .cache
 .env
 .env.*
+.sessionsift-local-sources.json
 !.env.sessionsift.example
 coverage
 coverage.out

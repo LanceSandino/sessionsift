@@ -1,13 +1,65 @@
-# SessionSift MCP connection guide
+# Local MCP onboarding
 
-SessionSift exposes ten read-only tools: seven session inspection/comparison
-tools plus aggregate analytics, recurring corrections, and deterministic
-context recommendations. Every tool calls the canonical Local Agent service.
-There is no shell, process, filesystem, raw SQL, or arbitrary HTTP tool.
+Ten read-only stdin/stdout tools use the same restricted Local Agent:
+`list_sessions`, `get_session`, `get_session_metrics`, `get_session_timeline`,
+`get_turn`, `get_findings`, `compare_sessions`, `get_analytics`,
+`get_recurring_corrections`, `get_context_recommendations`. No shell, generic
+filesystem, SQL or HTTP tool is exposed. Start the agent first; no SessionSift
+OAuth, Google login or API key is needed for local MCP.
 
-## Codex local stdio
+## Review without changes
 
-Run `sessionsift setup mcp`, then merge the printed block into `~/.codex/config.toml`:
+```bash
+sessionsift setup mcp
+sessionsift setup mcp --client codex --preview
+sessionsift setup mcp --client claude-code --preview
+```
+
+The first command preserves the original configuration printer. Client-specific
+preview shows only the proposed absolute launcher and profile, not existing
+config or secrets. Defaults: `CODEX_HOME/config.toml` (otherwise
+`~/.codex/config.toml`), `CLAUDE_CONFIG_DIR/.claude.json` (otherwise
+`~/.claude.json`). An absolute `--config` selects another profile. Existing
+conflicting SessionSift entries are refused, never silently retargeted.
+
+## Optional safe setup
+
+Close the selected client and config editors before apply/undo. macOS atomic
+replacement cannot prevent an uncooperative editor writing after the final byte
+check; do not edit concurrently. Select only the client you want:
+
+```bash
+sessionsift setup mcp --client codex --apply --yes
+sessionsift setup mcp --client codex --verify
+sessionsift setup mcp --client claude-code --apply --yes
+sessionsift setup mcp --client claude-code --verify
+```
+
+Apply makes private backups and durable ownership receipts under SessionSift
+state, preserves unrelated configuration and refuses symlinks/conflicts. Repeated
+apply is idempotent. Verify starts the selected launcher and discovers exactly
+ten read-only tools; **no tools are called or transcripts read**. This is not an
+authenticated AI inference test. Reconnect/restart the selected client to refresh
+its cached inventory.
+
+The absolute resolved executable is recorded, including Homebrew Cellar paths.
+Before removing/upgrading it, undo; then preview/apply the new version. Source
+builds use the same commands through `./dist/sessionsift`. `--command` selects
+an existing absolute executable; repeatable `--arg` selects arguments (default
+`mcp`). Shell interpreters and remote URLs are refused. The [Docker guide](docker-local.md)
+uses native client configuration commands for its explicit Bash wrapper.
+
+Undo removes only the unchanged entry owned by this setup, preserving other
+servers/settings/data. Manual modification of that entry causes refusal:
+
+```bash
+sessionsift setup mcp --client codex --undo --yes
+sessionsift setup mcp --client claude-code --undo --yes
+```
+
+## Manual client configuration
+
+Codex uses this reviewable block (PATH must resolve the binary):
 
 ```toml
 [mcp_servers.sessionsift]
@@ -15,55 +67,36 @@ command = "sessionsift"
 args = ["mcp"]
 ```
 
-Reconnect the MCP server after SessionSift tools change; clients commonly cache the tool list for the life of a connection.
-
-## Claude Code local stdio
+Claude Code's native commands are:
 
 ```bash
 claude mcp add --scope user sessionsift -- sessionsift mcp
+claude mcp list
 ```
 
-Claude Desktop uses the same command under `mcpServers` in
-`claude_desktop_config.json`: `"sessionsift": {"command": "sessionsift", "args": ["mcp"]}`.
+Claude Desktop uses `"sessionsift":{"command":"sessionsift","args":["mcp"]}`
+under `mcpServers`; prefer an absolute executable for desktop clients. Managed
+undo does not own manually added entries; remove those with the client's own
+commands/editor. Codex and Claude have separate configuration/authentication.
+Cloud ChatGPT cannot connect directly to local stdio.
 
-## Remote HTTP clients
+## Tool use and troubleshooting
 
-The remote endpoint is `https://YOUR-BRIDGE/mcp`. It uses Streamable HTTP and
-OAuth discovery; do not copy a bearer grant from the device into client
-configuration. The exact signed-in email must first be granted on the private
-device:
+Ask to list at most five sessions, inspect one returned ID, request metrics or
+compare two selected IDs. Session lists include paging metadata; one page is
+not necessarily the whole library. Timeline responses are bounded. Invalid or
+path-like IDs must not grant filesystem access.
 
-```bash
-sessionsift agent share person@example.com
-```
+Use Doctor, Status and the selected client's MCP status if discovery fails.
+Confirm the executable exists and agent/profile select the intended state and
+address. Stdout must contain MCP only; diagnostics belong on stderr. Docker
+stdio uses no TTY. Never copy provider OAuth tokens into SessionSift config.
 
-OAuth-capable Codex, ChatGPT, Claude, Cursor, VS Code, MCP Inspector, and custom
-clients can use the same endpoint. Cloudflare handles OAuth and the bridge plus
-Local Agent enforce the device-created grant.
+AI clients may send local tool output to their model provider. Read-only is not
+guaranteed offline processing or secret-free output; read the [privacy model](privacy-and-threat-model.md).
+Remote cloud connectors, hosted MCP and sync are deferred from this local-only
+release; preserved [remote architecture](remote-architecture.md) has a separate
+trust boundary. Never tunnel the local dashboard for cloud access.
 
-## ChatGPT and Claude OAuth MCP
-
-ChatGPT (developer-mode connectors) and Claude (Settings → Connectors → Add custom
-connector, or `claude mcp add --transport http sessionsift https://YOUR-BRIDGE/mcp`)
-connect to `https://sessionsift.example.com/mcp`. This endpoint
-uses current Streamable HTTP MCP through the official Go SDK and requires both:
-
-1. a valid Cloudflare Access `Cf-Access-Jwt-Assertion`, produced through
-   Cloudflare Managed OAuth; and
-2. a non-expired grant for the exact verified email, created on the private
-   device with `sessionsift agent share`.
-
-Protected-resource discovery is available at
-`/.well-known/oauth-protected-resource`. Keep Google as the upstream Access
-identity provider and enable Managed OAuth on the Access application. See the
-[deployment guide](deployment.md) for callbacks, lifetimes, environment values,
-and verification.
-
-ChatGPT and Claude.ai conversation data remain supported separately through
-user-provided data exports (`sessionsift import-chatgpt`, `sessionsift
-import-claude`); an MCP connection is not an export source. Claude Code
-transcripts are imported locally from `~/.claude/projects`.
-
-## Paging and bounds
-
-`list_sessions` returns `total`, `returned`, `offset`, `has_more`, and `next_cursor`. Continue until `has_more` is false before acting on “all” sessions. Timeline results are capped at 1,000 entries and report truncation.
+Syntax references: [official Codex docs](https://developers.openai.com/codex/mcp)
+and [official Claude Code docs](https://code.claude.com/docs/en/mcp).

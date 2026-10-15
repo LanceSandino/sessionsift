@@ -23,3 +23,5 @@ src/webui/dist/
 *.test
 .stryker-tmp/
 reports/
+.sessionsift-local-sources.json
+__pycache__/

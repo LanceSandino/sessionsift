@@ -2,7 +2,7 @@
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
   "testRunner": "command",
   "commandRunner": {
-    "command": "npm run test:mutation:unit"
+    "command": "node scripts/run-with-timeout.mjs 8 npm run test:mutation:unit"
   },
   "coverageAnalysis": "off",
   "mutate": [

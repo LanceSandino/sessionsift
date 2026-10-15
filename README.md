@@ -1,376 +1,162 @@
 # SessionSift
 
-SessionSift is a local-first conversation profiler for Codex, Claude Code,
-ChatGPT, and Claude. It imports live and archived Codex transcripts, live Claude
-Code transcripts (including subagents), and user-provided ChatGPT and Claude.ai
-data exports, normalizes activity into SQLite, and shows where tokens, context,
-tools, retries, and corrections accumulated. Its findings link back to observed
-evidence; it does not assign a productivity score.
+Free, local-first conversation analysis for Codex, Claude Code and explicitly
+imported ChatGPT/Claude exports. Browse conversations, inspect tokens and tools,
+compare sessions and use ten read-only local MCP tools. No account, Google login,
+bridge or cloud service is required. Findings point to evidence, not productivity scores.
 
-The trusted Go process is the Local Agent product boundary. React, CLI, and
-future MCP clients consume the same allowlisted, versioned Session Protocol;
-provider parsers and SQLite are not client-facing interfaces.
+**Version 2.1.0.** See [what this release includes](docs/release-candidate.md).
+macOS binaries are unsigned and unnotarized; the published SHA-256 checksums
+verify download integrity, not publisher identity. Do not disable Gatekeeper
+globally.
 
-> **Private preview:** SessionSift is being prepared for outside testing, but
-> this repository is not ready for public release. The current publication
-> gates are tracked in
-> [`docs/public-release-readiness.md`](docs/public-release-readiness.md).
+Supported first-release platforms: macOS Intel (AMD64) and Linux AMD64 only.
+Apple Silicon and Linux ARM64 are deferred; no ARM download or native support
+is offered in this release.
 
-## Screenshots
+## 1. Homebrew
 
-![The Conversation lens: a prompt and a steering message, a tool run whose failed race test is selected, and the inspector showing that call's redacted arguments and result](docs/screenshots/01-workspace-conversation.webp)
-
-One session in the **Conversation** lens. Each prompt's tool calls fold into a
-run; a failure later followed by a success is labelled, and the inspector shows
-the selected call's redacted evidence. All screenshots use synthetic demo data.
-See the [guided screenshot tour](docs/screenshot-tour.md) for local analysis,
-diagnostics, mobile layouts, and the optional sharing workflow.
-
-## Quick start
-
-Requirements: Go 1.27+ and Node.js 22+.
+Install from **LanceSandino/homebrew-tap**. The formula offers macOS Intel and
+Linux amd64; ARM builds are not offered yet.
 
 ```bash
-npm install
-npm run build
-./dist/sessionsift import
-./dist/sessionsift start
-```
-
-Open <http://127.0.0.1:7777>. SessionSift imports
-`$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions` (normally under
-`~/.codex`) and Claude Code's `$CLAUDE_CONFIG_DIR/projects` (normally
-`~/.claude/projects`). Re-running `import` processes only changed transcript
-files. Starting the app also watches those directories and refreshes changed
-sessions on a background scan 15 seconds after the previous scan completes.
-This coalesces active writes and keeps idle collection inexpensive. Startup and
-manual imports run immediately; lifecycle hooks still arrive immediately.
-
-Do not route a public tunnel to this port. Public deployments run the separate
-connection bridge on port 7780; the Local Agent stays on loopback and polls the
-bridge outbound.
-
-### Run continuously with Docker Compose
-
-On macOS, the supported supervised-service option is Docker Compose. The
-default file runs only the Local Agent. It keeps the existing
-`~/.sessionsift` state on the host, mounts only Codex transcript/index paths
-read-only, binds port 7777 to host loopback, and restarts unless explicitly
-stopped. The hosted bridge is not required for local use.
-
-```bash
-cp .env.sessionsift.example .env.sessionsift.local
-# Edit the non-secret host path and UID/GID.
-docker compose --env-file .env.sessionsift.local up -d --build
-docker compose --env-file .env.sessionsift.local ps
-curl --fail http://127.0.0.1:7777/readyz
-```
-
-Only operators who intentionally deploy remote support, invitations, or hosted
-MCP should add the bridge overlay and its Cloudflare Access values:
-
-```bash
-docker compose -f compose.yaml -f compose.remote.yaml \
-  --env-file .env.sessionsift.local up -d --build
-curl --fail http://127.0.0.1:7780/readyz
-```
-
-Do not point Compose at `.env.cloudflare`; that ignored file is for credentialed
-HTTP probes and is neither a Docker environment file nor build input. Docker
-Desktop `cloudflared` origins use `host.docker.internal:7777` for an optional
-owner-only UI tunnel and `host.docker.internal:7780` for the optional hosted bridge. See
-[`docs/deployment.md`](docs/deployment.md) for backup, migration, and rollback.
-
-The main commands are:
-
-```text
-sessionsift start
-sessionsift bridge
-sessionsift agent connect <bridge-url> [device-name]
-sessionsift agent link [--no-wait]
-sessionsift agent share <email> [days]
-sessionsift agent revoke <email>
-sessionsift agent status
-sessionsift support start <session-id> [view|comment|review] [minutes]
-sessionsift support list
-sessionsift support end <support-id>
-sessionsift stop
-sessionsift status
-sessionsift backup
-sessionsift import
-sessionsift import-chatgpt <export.json-or-zip>
-sessionsift import-claude <export.json-or-zip>
-sessionsift sessions
-sessionsift inspect <session-id>
-sessionsift compare <session-a> <session-b>
-sessionsift mcp
+brew tap LanceSandino/tap
+brew install LanceSandino/tap/sessionsift
 sessionsift doctor
-sessionsift setup enable [claude]
-sessionsift setup hooks
-sessionsift setup claude
-sessionsift setup otel
-sessionsift setup chatgpt
-sessionsift setup mcp
-sessionsift setup undo
+brew services start sessionsift
+sessionsift status
+sessionsift web
 ```
 
-## Claude Code and Claude conversations
+The service runs the existing foreground agent as your user, not root. No
+`sudo` is needed. Alternatively run `sessionsift start` and leave that terminal
+open; do not start both on the same port. For headless use, `sessionsift web
+--no-browser` checks readiness and prints the loopback URL.
 
-Claude Code transcripts are discovered automatically; each subagent transcript
-becomes its own session so it never overwrites its parent. Titles follow Claude
-Code's renamed title, then its generated title, then the first prompt. Thinking
-text is never stored. Claude reports cache reads separately; SessionSift counts
-them inside input tokens and as the cached share so cache ratios compare across
-providers, and each API response's usage is counted once.
-
-`sessionsift setup enable claude` merges SessionSift's non-blocking hook into the
-`hooks` object of `~/.claude/settings.json` (every other byte is preserved;
-symlinks and invalid JSON are refused). `sessionsift setup claude` prints the
-same settings, the Claude Code MCP command, and export instructions for review.
-
-For Claude.ai, request an export from **Settings → Privacy → Export data**, then:
+Stop and uninstall without deleting your library or source transcripts:
 
 ```bash
-sessionsift import-claude ~/Downloads/claude-export.zip
+brew services stop sessionsift
+brew uninstall sessionsift
 ```
 
-Only the conversations JSON is read; account, profile, and project files in the
-export are ignored. Attachment contents are not imported, only their count and
-file names. The path is remembered and re-imported when replaced
-(`SESSIONSIFT_CLAUDE_EXPORT` overrides it).
+Undo opted-in MCP configuration before uninstalling. Data remains in
+`~/.sessionsift`; review and back up that directory before any separate deletion.
 
-## ChatGPT conversations
-
-Request a ChatGPT data export from **Settings → Data Controls**, then import the
-downloaded ZIP directly:
+To update, stop the service and undo any configuration pinned
+to the old Cellar executable, then upgrade and reapply the reviewed MCP setup:
 
 ```bash
-sessionsift import-chatgpt ~/Downloads/chatgpt-export.zip
+brew services stop sessionsift
+brew update
+brew upgrade LanceSandino/tap/sessionsift
+brew services start sessionsift
+sessionsift doctor
 ```
 
-`conversations.json` and numbered `conversations*.json` files are also accepted.
-SessionSift remembers the selected private local path and checks it for changes
-every five seconds while running. Replacing that file with a newer export updates
-the imported conversations. `SESSIONSIFT_CHATGPT_EXPORT` overrides the remembered
-path. SessionSift does not scrape a ChatGPT account or read browser credentials.
+Homebrew updates the installed package; there is no `sessionsift update` command.
 
-ChatGPT exports do not always include token counts or every internal tool detail;
-unavailable measurements remain zero rather than being estimated.
+### Release archive
 
-## Tools and MCP
-
-The inspector groups every observed tool name and reports executions, failures,
-transport, and MCP server. Built-in tools, MCP calls, and app/connector calls are
-counted separately. Turn detail retains bounded redacted arguments and result
-previews when the source records provide them.
-
-The chat transcript, conversation timeline, and tools-used panels are fixed-height
-scroll regions. Each opens at the latest activity and provides prompt checkpoint
-buttons for jumping back through a long session.
-
-`sessionsift mcp` runs the ten-tool, read-only local MCP server over stdio,
-including privacy-safe aggregate analytics, recurring-correction patterns, and
-context recommendations.
-`sessionsift setup mcp` prints ready-to-review Codex, Claude Code, and Claude
-Desktop configuration. Session
-lists page explicitly and tool responses stay bounded and redacted. See the
-[MCP connection guide](docs/mcp-connection-guide.md) for local and scoped remote
-clients.
-
-## Personal optimization loop
-
-Open **Optimize** to turn deterministic recommendations into local experiments.
-Choose a baseline session, attach a later follow-up, and inspect observed metric
-deltas without a score or declared winner. Recommendation state, experiments,
-and content-free adoption counters persist in the local SQLite database. Weekly
-reports download as privacy-safe Markdown or JSON; see
-[docs/optimization-loop.md](docs/optimization-loop.md).
-
-## Remote support and collaboration
-
-Connections work like remote-support tools: **the machine with the sessions
-generates the code, and the other person types it in.**
-
-1. Connect this device once: `sessionsift agent connect https://YOUR-BRIDGE` (or
-   **Connections → Connect this device**). No account is needed.
-2. Open a conversation, choose **Support** in the top bar, then **Generate support code** (or
-   `sessionsift support start <session-id>`). You get a code like
-   `7Q4M-2KXH-9TRD` that expires in ten minutes and works once.
-3. Your supporter signs in at `https://YOUR-BRIDGE/support`, enters the code, and
-   lands directly in that one conversation — nothing else on your machine is
-   reachable. Your device verifies the code itself before access starts.
-4. You see who is connected and can **Disconnect supporter** at any time; access
-   also ends when its chosen length (5 minutes to 8 hours) runs out.
-
-To use your own sessions from ChatGPT or Claude MCP, email invitations, or the
-hosted session list, link the device to your account with
-`sessionsift agent link` and enter the code it shows under **Add a device** at
-`/`. The device owner grants or revokes an exact email locally with
-`sessionsift agent share` and `sessionsift agent revoke`; grants are short-lived,
-read-only, and operation-scoped.
-
-Annotations and review outcomes are redacted, capability-scoped collaboration
-records. The provider-neutral bridge uses outbound polling and signed device
-responses, so a deployment does not expose the workstation or provider
-credentials. See [remote architecture](docs/remote-architecture.md). The bundled
-bridge persists its queue and registry in a private SQLite database.
-
-The public `/mcp` path uses the official MCP SDK, current protocol negotiation,
-Cloudflare Access signed identity, and a separate locally approved email grant
-for OAuth-capable MCP clients such as ChatGPT and Claude. Google can remain the
-upstream Access login provider while Cloudflare Managed OAuth supplies OAuth
-discovery, dynamic client registration, consent, token issuance, and refresh
-tokens. Dynamic client registration happens at Cloudflare's authorization
-server, not inside SessionSift; SessionSift acts as the protected MCP resource
-and verifies the resulting Cloudflare Access identity before applying its own
-local email grant. Each client callback URI must be allowed in the Cloudflare
-Managed OAuth application (for example, ChatGPT's connector callbacks and
-Claude's `https://claude.ai/api/mcp/auth_callback`). See the
-[deployment guide](docs/deployment.md) for the required routes and settings.
-
-ChatGPT transcript import remains fully supported through user-provided exports
-and is independent of ChatGPT MCP access.
-
-## Live events
-
-`sessionsift setup enable` safely merges SessionSift lifecycle hooks into
-`~/.codex/hooks.json` and local OTLP log and metrics exporters into
-`~/.codex/config.toml`. It is idempotent and refuses to replace symlinks or an
-existing, different `[otel]` section. `sessionsift setup hooks` and
-`sessionsift setup otel` print the same settings for manual review. The hook
-command has a 40 ms localhost budget and falls back to private files under
-`~/.sessionsift/raw/events`; those files are replayed on the next start and
-removed after successful persistence.
-
-Codex requires unmanaged hooks to be reviewed and trusted after installation;
-open `/hooks` in Codex to complete that approval. The OTLP configuration keeps
-prompt logging disabled. SessionSift validates standard binary and JSON
-OTLP/HTTP log and metrics batches, retains only redacted attributable log
-metadata, and uses attributable token measurements to refine turn metrics.
-Transcript imports remain the authoritative session history and hooks provide
-the lowest-latency activity.
-
-## Titles, context, and navigation
-
-For Codex sessions, the user-assigned thread name from the read-only local Codex
-state index takes precedence over the first prompt. The inspector shows the
-observed start time, client/surface, thread source, approval mode, sandbox,
-network policy, and a clearly labeled derived local/remote classification when
-the source supports it. Later user messages observed in the same turn appear as
-`STEER / QUEUE`; the available local records do not reliably distinguish those
-two delivery modes, so SessionSift does not guess.
-
-The web UI is a conversation-first workspace. A narrow rail switches between
-Sessions, Analytics, Compare, Connections and Diagnostics; the session library
-lists every source, most recently updated first (or by creation, title or input
-tokens), with search and source filters. A session opens
-in four lenses — **Conversation**, **Timeline**, **Tools** and **Review** — beside
-an inspector whose **Context**, **Evidence** and **Notes** tabs follow whatever
-call, prompt, file or finding you select. Review notes and decisions are local
-annotations: they never modify the transcript and are never sent to the source
-agent. `Ctrl/Cmd K` opens a command palette, `Ctrl/Cmd Shift F` toggles focus
-mode, `/` searches the library, and the rail switches light and dark themes.
-
-Screens use History API navigation and deep links such as `/sessions/<id>`,
-`/sessions/<id>/timeline`, `/compare`, `/analytics`, `/connections`, and
-`/diagnostics` without page reloads; the earlier `/remote-access` and
-`/remote-review` links open Connections. Browser back and forward navigation is
-supported.
-
-The Analytics screen aggregates session, token, cache, tool, source, model,
-repository, failure, and deterministic finding signals. Its coverage card
-shows the complete stored-record inventory and identifies internal auto-review
-and telemetry-only records intentionally excluded from the aggregates, so the
-Analytics total is never mistaken for an import total. Parser health separates
-non-fatal compatibility notices from warning groups that may contain skipped
-source records. Analytics intentionally omits prompt text, response text, tool
-arguments, and tool results.
-
-The session library separates transcript owners with a permanent **Started by**
-filter. **You** is the default and contains top-level conversations; **Agents**
-contains separately spawned Codex and Claude Code subagent transcripts;
-**Reviews** contains guardian and auto-review work; and **All** combines them.
-Small `you`, `agent`, and `review` badges keep the origin visible while browsing.
-Assistant replies inside a top-level conversation remain part of that user-started
-conversation—the filter classifies the transcript owner, not each message author.
-
-## Privacy model
-
-- The server binds only to `127.0.0.1:7777` and additionally refuses non-loopback
-  `Host` headers (DNS rebinding), cross-site browser mutations, non-JSON owner
-  writes, and framing.
-- Product state defaults to `~/.sessionsift` and can be moved with
-  `SESSIONSIFT_HOME`.
-- Repository roots and tool targets are hashed with a private per-installation
-  key, home and account paths are normalized in every encoding transcripts use,
-  and common API keys (OpenAI, Anthropic, GitHub, Stripe, Slack, Google, GitLab,
-  npm, Hugging Face, AWS), bearer tokens, database URLs, private keys, and named
-  secrets are redacted — including in titles and command signatures.
-- Tool payload previews and timelines are bounded; malformed or unknown Codex
-  and ChatGPT records become safe metadata and parser warnings instead of
-  breaking the import.
-- SessionSift does not read `~/.codex/auth.json`, `~/.claude/.credentials.json`,
-  or upload the local database.
-  Only redacted responses to explicitly granted typed requests cross the bridge.
-- Remote features are inert until the owner creates and approves a pairing;
-  grants are hashed or identity-bound at rest, expire, are rate-limited,
-  audited, and revocable.
-- SQLite readiness is checked at `/readyz`; consistent private backups are made
-  at startup and daily with seven-snapshot retention.
-
-Codex transcript and ChatGPT export records are treated as changing input
-formats. Each adapter is versioned, preserves warnings, and maps raw records
-into a provider-neutral domain model before analysis.
-
-## Development
+Each [release](https://github.com/LanceSandino/sessionsift/releases) has
+`sessionsift_<version>_darwin_amd64.tar.gz`, `sessionsift_<version>_linux_amd64.tar.gz`,
+an SPDX inventory and `SHA256SUMS`. Verify and unpack, then run the binary:
 
 ```bash
-npm install
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar -xzf sessionsift_2.1.0_darwin_amd64.tar.gz
+./sessionsift_2.1.0_darwin_amd64/sessionsift doctor
+```
+
+## 2. Docker
+
+Requires a maintained Docker Engine/Desktop (Engine at least 28.5.2) and Compose
+v2.24.4+; see [security/version requirements](docs/docker-local.md). From this source directory:
+
+```bash
+docker compose --env-file /dev/null -f compose.local.yaml up -d --build
+docker compose --env-file /dev/null -f compose.local.yaml ps
+docker compose --env-file /dev/null -f compose.local.yaml exec -T agent /app/sessionsift doctor
+```
+
+Open <http://127.0.0.1:7777>. This locally built image uses a non-root/read-only
+container and persistent named volume. No transcripts are mounted by default.
+[Docker instructions](docs/docker-local.md) cover safe optional read-only mounts,
+imports, Codex/Claude stdio MCP, permissions and teardown. The dedicated network
+is not an outbound firewall. There is no published SessionSift image to pull yet.
+
+```bash
+docker compose --env-file /dev/null -f compose.local.yaml down
+```
+
+This preserves data. **Do not add `--volumes`.** Do not use private/operator
+Compose files for consumer installation.
+
+## 3. Build from Source
+
+Use **Go 1.27.2** (`go.mod`), **Node.js 26** (tested with 26.9.0), npm and a source
+copy with `LICENSE`/`NOTICE`. Locked test dependencies require Node
+`^22.22.2 || ^24.15.0 || >=26.0.0`; older generic “Node 22+” is insufficient.
+Dependency downloads initially require internet; app use does not. No private
+skills, credentials or infrastructure are prerequisites.
+
+```bash
+git clone https://github.com/LanceSandino/sessionsift.git
+cd sessionsift
+```
+
+```bash
+npm ci
 npm test
 npm run build
 ./dist/sessionsift version
+./dist/sessionsift doctor
+./dist/sessionsift start
 ```
 
-The current release is `2.0.1`. SessionSift follows Semantic Versioning;
-human-readable release notes live in [`CHANGELOG.md`](CHANGELOG.md) and are
-available inside the app at `/changelog` in bounded pages. `CHANGES.md` remains
-the engineering/protocol audit log rather than the release changelog.
+Leave `start` running; in another terminal:
 
-The test command enforces coverage floors and builds the embedded frontend.
+```bash
+./dist/sessionsift web
+./dist/sessionsift import
+./dist/sessionsift sessions
+```
 
-## Structure
+Ctrl-C or `./dist/sessionsift stop` stops the foreground agent. Removing the
+build/check-out does not remove `~/.sessionsift` or transcripts. Keep required
+license/notices when redistributing a permitted build.
 
-- `src/cmd/sessionsift`: CLI entrypoint
-- `src/internal`: collector, parser, storage, analyzers, optimization loop, and HTTP API
-- `src/internal/mcp`: local and HTTP MCP protocol adapter
-- `src/internal/remote`: device identity, pairing, grants, support codes, bridge runtime, and collaboration
-- `src/internal/claude`: Claude Code discovery and transcript adapter, Claude.ai export adapter
-- `src/internal/supportcode`: code generation, normalization, and hashing
-- `src/internal/hooks`: provider-aware hook payload redaction
-- `src/web`: React and TypeScript source
-- `src/webui`: generated assets embedded in the Go binary
+## Use SessionSift
 
-## API
+The [local guide](docs/local-guide.md) covers lifecycle, import/export files,
+Conversation/Timeline/Tools/Review, inspection, comparison, backups and uninstall.
+[MCP setup](docs/mcp-connection-guide.md) includes preview, explicit safe
+configuration, verification and undo for local Codex and Claude Code.
+`sessionsift setup mcp` still prints configuration without modifying files.
+Hooks remain optional and disabled until explicitly enabled.
 
-The localhost API exposes session lists, session details, turns, events,
-findings, metrics, comparisons, privacy-safe analytics, and the local optimization loop below `/api/v1`. Session lists exclude
-internal reviews by default; pass `include_internal=true` to include them. Hook
-ingestion is available at `/internal/hooks/codex` and `/internal/hooks/claude`, OTLP logs at `/v1/logs`, OTLP
-metrics at `/v1/metrics`, `/healthz` reports process liveness, and `/readyz`
-checks database integrity.
+Default sources are Codex sessions/archives and Claude Code projects. Imports
+are incremental. Missing optional sources and an empty library are normal.
+Redaction is not a guarantee of secret-free records. AI clients you connect may
+send tool output to their own provider; local MCP does not make that client
+offline. Read the [privacy model](docs/privacy-and-threat-model.md). Never expose
+or tunnel the Local Agent dashboard to a LAN or the internet.
 
-`POST /api/v1/protocol` exposes the localhost-only typed Session Protocol. Its
-v1 registry contains session list/detail/metrics/timeline/findings/comparison,
-turn detail, connection-status, analytics, recurring-correction, and context
-recommendation operations. Every operation defines its
-capability, audit category, response-size limit, redaction policy, timeout, and
-pagination behavior. Generic shell, process, filesystem, command, and SQL
-operations are intentionally absent and fail closed.
+Remote support, hosted MCP and encrypted cloud sync are **not offered in the
+initial local-only release**. Preserved generic bridge source uses the same
+binary, not another prerequisite or a promised public service. Advanced controls
+are hidden until explicitly requested. [Basic self-host instructions](docs/self-host-operations.md)
+apply only to deliberate use of that deferred functionality. Remote MCP is not
+end-to-end encrypted.
+
+![Synthetic conversation workspace](docs/screenshots/01-workspace-conversation.webp)
+
+The [screenshot tour](docs/screenshot-tour.md) contains demo data. Report
+vulnerabilities privately through [SECURITY.md](SECURITY.md), never with real
+transcripts or credentials in a public issue.
 
 ## License
 
-SessionSift is source-available under the
-[PolyForm Noncommercial License 1.0.0](LICENSE). Noncommercial use is allowed;
-commercial use is not licensed. The required copyright notice is in
-[`NOTICE`](NOTICE). If you want to evaluate a commercial use or hosted offering,
-contact the copyright holder before relying on these terms.
+Source-available under [PolyForm Noncommercial 1.0.0](LICENSE) with required
+[NOTICE](NOTICE) attribution. Not OSI open source; commercial use is reserved.
+Owner/legal disposition remains a publication prerequisite.

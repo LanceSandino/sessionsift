@@ -26,6 +26,7 @@ import (
 	"github.com/LanceSandino/sessionsift/src/internal/app"
 	bridgeapp "github.com/LanceSandino/sessionsift/src/internal/bridge"
 	claudediscover "github.com/LanceSandino/sessionsift/src/internal/claude/discover"
+	"github.com/LanceSandino/sessionsift/src/internal/cloudsync"
 	"github.com/LanceSandino/sessionsift/src/internal/codex/discover"
 	"github.com/LanceSandino/sessionsift/src/internal/codexconfig"
 	"github.com/LanceSandino/sessionsift/src/internal/config"
@@ -65,8 +66,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return healthcheck(args[1], out, errOut)
 	case "start":
 		return start(ctx, paths, out, errOut)
+	case "web":
+		return web(ctx, args[1:], out, errOut)
 	case "bridge":
-		return startBridge(ctx, out, errOut)
+		return bridgeCommand(ctx, args[1:], out, errOut)
 	case "agent":
 		return agentCommand(ctx, paths, args[1:], out, errOut)
 	case "support":
@@ -126,6 +129,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			}
 			return enableSetup(out, errOut)
 		}
+		if args[1] == "mcp" && len(args) > 2 {
+			return setupMCP(ctx, paths, args[2:], out, errOut)
+		}
 		return setup(args[1], out, errOut)
 	default:
 		usage(errOut)
@@ -134,7 +140,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sessionsift <start|bridge|agent|support|stop|status|healthcheck|backup|import|import-chatgpt|import-claude|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
+	fmt.Fprintln(w, "usage: sessionsift <start|web|bridge|agent|support|stop|status|healthcheck|backup|import|import-chatgpt|import-claude|sessions|inspect|compare|mcp|doctor|setup|hook|version>")
 }
 
 func healthcheck(target string, out, errOut io.Writer) int {
@@ -166,12 +172,72 @@ func openStore(paths config.Paths) (*storage.Store, error) {
 	if err := paths.Ensure(); err != nil {
 		return nil, err
 	}
+	if err := backupBeforeMigration(context.Background(), paths); err != nil {
+		return nil, err
+	}
 	key, err := config.LoadOrCreateSecret(paths.PathKey)
 	if err != nil {
 		return nil, fmt.Errorf("path hash secret: %w", err)
 	}
 	redact.SetPathKey(key)
-	return storage.Open(paths.Database)
+	store, err := storage.Open(paths.Database)
+	if err != nil {
+		return nil, err
+	}
+	if err = writePrivateFile(paths.VersionMarker, []byte(app.Version()+"\n")); err != nil {
+		store.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func backupBeforeMigration(ctx context.Context, paths config.Paths) error {
+	if _, err := os.Lstat(paths.Database); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	current := "unknown"
+	if body, err := os.ReadFile(paths.VersionMarker); err == nil {
+		current = strings.TrimSpace(string(body))
+		if current == app.Version() {
+			return nil
+		}
+	}
+	name := fmt.Sprintf("pre-migration-%s-to-%s-%s.db", safeVersionPart(current), safeVersionPart(app.Version()), time.Now().UTC().Format("20060102T150405.000000000Z"))
+	return storage.BackupDatabaseFile(ctx, paths.Database, filepath.Join(paths.Backups, name))
+}
+
+func safeVersionPart(value string) string {
+	value = strings.Map(func(character rune) rune {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '.' || character == '-' {
+			return character
+		}
+		return '-'
+	}, value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func writePrivateFile(path string, body []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".sessionsift-state-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err = temporary.Chmod(0o600); err == nil {
+		_, err = temporary.Write(body)
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
@@ -229,6 +295,7 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		go importAndWatchExport(stopCtx, store, claudeExport, "Claude", ingest.ImportClaudeExport, out, errOut)
 	}
 	go runBackups(stopCtx, store, paths.Backups, errOut)
+	go runCloudSync(stopCtx, store, paths, identity, remoteManager, hosted, errOut)
 	if status := hosted.Status(); status.Connected {
 		fmt.Fprintf(out, "Outbound bridge connected to %s\n", status.URL)
 	}
@@ -243,6 +310,74 @@ func start(ctx context.Context, paths config.Paths, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	return 0
+}
+
+func runCloudSync(ctx context.Context, store *storage.Store, paths config.Paths, identity remote.Identity, manager *remote.Manager, hosted *remote.HostedRuntime, errOut io.Writer) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if runErr := runCloudSyncOnce(ctx, store, paths, identity, manager, hosted); runErr != nil {
+			fmt.Fprintf(errOut, "cloud sync warning: %v\n", runErr)
+		}
+	}
+}
+
+func runCloudSyncOnce(ctx context.Context, store *storage.Store, paths config.Paths, identity remote.Identity, manager *remote.Manager, hosted *remote.HostedRuntime) error {
+	settings, err := store.SyncSettings(ctx)
+	if err != nil || !settings.Enabled || settings.Paused {
+		return err
+	}
+	if hosted == nil {
+		return errors.New("linked bridge unavailable")
+	}
+	bridgeConfig, err := hosted.CurrentConfig()
+	if err != nil || bridgeConfig.Owner == "" || bridgeConfig.WorkspaceID == "" {
+		_ = store.RecordSyncRun(ctx, 0, 0, errors.New("linked bridge unavailable"))
+		return errors.New("linked bridge unavailable")
+	}
+	key, err := (cloudsync.KeyStore{FilePath: paths.SyncMasterKey, Account: identity.ID}).Load()
+	if err != nil {
+		_ = store.RecordSyncRun(ctx, 0, 0, err)
+		return err
+	}
+	transport := &cloudsync.HTTPTransport{Client: hostedHTTPClient, Config: bridgeConfig, Identity: identity}
+	engine := &cloudsync.Engine{Store: store, Transport: transport, MasterKey: key, WorkspaceID: bridgeConfig.WorkspaceID, DeviceID: identity.ID, Epoch: settings.KeyEpoch, Sign: identity.Sign}
+	selection := cloudsync.SnapshotSelection{Summaries: settings.Summaries, FindingsNotes: settings.FindingsNotes, DetailedEvidence: settings.DetailedEvidence}
+	_, runErr := cloudsync.QueueSnapshots(ctx, engine, store, selection)
+	if runErr == nil {
+		_, runErr = cloudsync.QueuePersonalState(ctx, engine, store, selection, cliPersonalSyncState(manager))
+	}
+	if runErr == nil {
+		_, runErr = engine.QueueReplicaEdits(ctx)
+	}
+	if runErr == nil {
+		runErr = engine.RunOnce(ctx)
+	}
+	usage, usageErr := transport.Usage(ctx)
+	if runErr == nil {
+		runErr = usageErr
+	}
+	_ = store.RecordSyncRun(ctx, usage.Bytes, usage.Limit, runErr)
+	return runErr
+}
+
+func cliPersonalSyncState(manager *remote.Manager) cloudsync.PersonalState {
+	state := cloudsync.PersonalState{}
+	if manager == nil {
+		return state
+	}
+	for _, value := range manager.AllAnnotations() {
+		state.Notes = append(state.Notes, cloudsync.PortableNote{ID: value.ID, SessionID: value.SessionID, TurnID: value.TurnID, Author: value.Author, Body: value.Body, CreatedAt: value.CreatedAt})
+	}
+	for _, value := range manager.AllReviews() {
+		state.Reviews = append(state.Reviews, cloudsync.PortableReview{ID: value.ID, SessionID: value.SessionID, Reviewer: value.Reviewer, Status: value.Status, Summary: value.Summary, CreatedAt: value.CreatedAt})
+	}
+	return state
 }
 
 func replayHookSpool(ctx context.Context, store *storage.Store, directory string, out, errOut io.Writer) {
@@ -276,6 +411,12 @@ func startBridge(ctx context.Context, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	defer store.Close()
+	store.ConfigureSync(bridgeapp.SyncLimits{
+		MaxObjectBytes:    positiveEnvInt64("SESSIONSIFT_SYNC_MAX_OBJECT_BYTES"),
+		MaxWorkspaceBytes: positiveEnvInt64("SESSIONSIFT_SYNC_MAX_WORKSPACE_BYTES"),
+		MaxPageSize:       int(positiveEnvInt64("SESSIONSIFT_SYNC_MAX_PAGE_SIZE")),
+		MinFreeBytes:      positiveEnvInt64("SESSIONSIFT_SYNC_MIN_FREE_BYTES"),
+	})
 	verifier, err := accessauth.NewFromEnv(nil)
 	if err != nil {
 		return fail(errOut, fmt.Errorf("bridge requires SESSIONSIFT_ACCESS_ISSUER and SESSIONSIFT_ACCESS_AUD: %w", err))
@@ -304,6 +445,18 @@ func startBridge(ctx context.Context, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	return 0
+}
+
+func positiveEnvInt64(name string) int64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
 }
 
 func bridgeAddress() string {

@@ -291,6 +291,16 @@ func TestExpiredCodesAttemptLimitsAuditAndCollaboration(t *testing.T) {
 	if len(manager.Audit()) != 1 || len(manager.Annotations("s1")) != 1 || len(manager.Reviews("s1")) != 1 {
 		t.Fatal("persisted records missing")
 	}
+	allAnnotations := manager.AllAnnotations()
+	allReviews := manager.AllReviews()
+	if len(allAnnotations) != 1 || allAnnotations[0].ID != annotation.ID || len(allReviews) != 1 || allReviews[0].ID != review.ID {
+		t.Fatal("portable record inventory missing")
+	}
+	allAnnotations[0].Body = "caller mutation"
+	allReviews[0].Summary = "caller mutation"
+	if manager.AllAnnotations()[0].Body == "caller mutation" || manager.AllReviews()[0].Summary == "caller mutation" {
+		t.Fatal("portable record inventory leaked caller mutation")
+	}
 }
 
 func TestPairingDenialAuthenticationRateLimitAndDisconnectRevocation(t *testing.T) {

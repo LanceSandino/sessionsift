@@ -38,3 +38,7 @@ export type DiagnosticsStatus={collector_running:boolean;otel_active:boolean;ote
 export type ReleaseChange={category:string;items:string[]};
 export type Release={version:string;date:string;title:string;changes:ReleaseChange[]};
 export type ChangelogPage={current_version:string;page:number;page_size:number;total:number;total_pages:number;has_previous:boolean;has_next:boolean;releases:Release[]};
+export type SyncReplica={object_id:string;source_device_id:string;kind:string;epoch:number;revision:number;payload:Record<string,unknown>;remote_source:boolean;locally_edited:boolean;deleted:boolean;updated_at:string};
+export type CloudSyncStatus={enabled:boolean;paused:boolean;rotation_pending:boolean;summaries:boolean;findings_notes:boolean;detailed_evidence:boolean;key_configured:boolean;key_store:string;pending:number;cursor:number;replicas:number;replica_items?:SyncReplica[];conflicts:number;bridge:BridgeStatus;last_sync_at?:string;last_error?:string;usage_bytes:number;quota_bytes:number;key_epoch:number};
+export type RecoveryOffer={recovery_secret:string;message:string};
+export type SyncConflict={id:number;object_id:string;local:unknown;remote:unknown;remote_revision:number;created_at:string};

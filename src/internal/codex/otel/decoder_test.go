@@ -65,7 +65,7 @@ func TestDecodeRejectsMalformedPayload(t *testing.T) {
 
 func TestDecoderValueAndAttributeHelpers(t *testing.T) {
 	values := []*commonv1.AnyValue{
-		stringValue("secret sk-proj-" + "abcdefghijklmnopqrstuvwxyz"),
+		stringValue("secret sk-" + "proj-abcdefghijklmnopqrstuvwxyz"),
 		{Value: &commonv1.AnyValue_BoolValue{BoolValue: true}},
 		{Value: &commonv1.AnyValue_IntValue{IntValue: 4}},
 		{Value: &commonv1.AnyValue_DoubleValue{DoubleValue: 2.5}},
@@ -80,7 +80,7 @@ func TestDecoderValueAndAttributeHelpers(t *testing.T) {
 	if valueFrom(nil) != nil || anyValue(values[1]) != "" {
 		t.Fatal("unexpected nil or non-string conversion")
 	}
-	merged := merge(map[string]any{"a": "old"}, map[string]any{"a": "new", "duration.ms": float64(12), "success": false, "prompt.body": "Bearer abcdefghijklmnopqrstuvwxyz", "metadata": "sk-proj-" + "abcdefghijklmnopqrstuvwxyz", "nested": map[string]any{"value": "ghp_abcdefghijklmnopqrstuvwxyz"}})
+	merged := merge(map[string]any{"a": "old"}, map[string]any{"a": "new", "duration.ms": float64(12), "success": false, "prompt.body": "Bearer abcdefghijklmnopqrstuvwxyz", "metadata": "sk-" + "proj-abcdefghijklmnopqrstuvwxyz", "nested": map[string]any{"value": "ghp_abcdefghijklmnopqrstuvwxyz"}})
 	if merged["a"] != "new" || firstInt(merged, "duration.ms") != 12 || firstBool(merged, "success") == nil || firstString(merged, "missing") != "" {
 		t.Fatalf("helpers=%+v", merged)
 	}

@@ -121,9 +121,7 @@ func (r *Relay) taskDevice(taskID string) (string, bool) {
 }
 
 func (a *Agent) ServeHTTPNext(ctx context.Context, client *http.Client, bridgeURL string) (bool, error) {
-	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
-	}
+	client = withoutRedirects(client, 20*time.Second)
 	endpoint := strings.TrimRight(bridgeURL, "/") + "/v1/device/next"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -189,9 +187,7 @@ type HTTPRelayExecutor struct {
 
 func (e HTTPRelayExecutor) Execute(ctx context.Context, request protocol.Request) protocol.Response {
 	client := e.Client
-	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
-	}
+	client = withoutRedirects(client, 20*time.Second)
 	body, _ := json.Marshal(map[string]any{"device_id": e.DeviceID, "grant_token": e.GrantToken, "request": request})
 	response, err := client.Post(strings.TrimRight(e.BridgeURL, "/")+"/v1/tasks", "application/json", bytes.NewReader(body))
 	if err != nil {

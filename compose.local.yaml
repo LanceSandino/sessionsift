@@ -1,0 +1,49 @@
+# Consumer-local installation: one Local Agent, no account/bridge/provider.
+name: sessionsift-local
+services:
+  agent:
+    image: sessionsift-local:source
+    build:
+      context: .
+    pull_policy: never
+    command: ["start"]
+    user: "65532:65532"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=0700
+    environment:
+      HOME: /home/nonroot
+      SESSIONSIFT_HOME: /home/nonroot/state
+      CODEX_HOME: /sources/codex
+      CLAUDE_CONFIG_DIR: /sources/claude
+      SESSIONSIFT_ADDR: 0.0.0.0:7777
+      # Existing flag allows container listening; no tunnel/public URL is set.
+      SESSIONSIFT_ALLOW_DOCKER_TUNNEL: "true"
+      SESSIONSIFT_TRUSTED_PROXY_IP: 172.30.87.1
+    ports:
+      - "127.0.0.1:7777:7777"
+    volumes:
+      # Docker initializes this from the image's nonroot-owned home directory.
+      - local-state:/home/nonroot
+    networks: [local-only]
+    healthcheck:
+      test: ["CMD", "/app/sessionsift", "healthcheck", "agent"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+volumes:
+  local-state:
+networks:
+  local-only:
+    ipam:
+      config:
+        - subnet: 172.30.87.0/29
+          gateway: 172.30.87.1

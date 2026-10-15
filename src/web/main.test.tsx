@@ -35,6 +35,53 @@ function stubApi(routes:Routes={}){
 afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.restoreAllMocks();window.history.replaceState({},"","/");window.localStorage.clear();delete document.documentElement.dataset.theme});
 
 describe("App",()=>{
+  it("defaults to local controls without support polling or a share command",async()=>{
+    const fetchMock=stubApi();
+    render(<App/>);
+    await screen.findByRole("heading",{level:1,name:"Fix authentication middleware"});
+    expect(screen.queryByRole("button",{name:/^Support/})).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([path])=>String(path)==="/api/v1/remote/support")).toBe(false);
+    expect(screen.getByRole("link",{name:"Connections"})).toHaveAttribute("title","Connections · local read-only MCP setup");
+    fireEvent.click(screen.getByRole("button",{name:"Open command palette"}));
+    expect(screen.queryByRole("option",{name:/Share this conversation/})).not.toBeInTheDocument();
+    fireEvent.keyDown(window,{key:"k",ctrlKey:true});
+    fireEvent.click(within(screen.getByRole("list",{name:"Sessions"})).getByText("Tune the cache"));
+    await screen.findByRole("heading",{level:1,name:"Tune the cache"});
+    expect(fetchMock.mock.calls.some(([path])=>String(path)==="/api/v1/remote/support")).toBe(false);
+  });
+
+  it("keeps experimental support opt-in across navigation and stops polling when disabled",async()=>{
+    const fetchMock=stubApi();
+    const intervals=vi.spyOn(window,"setInterval");
+    const clear=vi.spyOn(window,"clearInterval");
+    const {unmount}=render(<App/>);
+    await screen.findByRole("heading",{level:1,name:"Fix authentication middleware"});
+    fireEvent.click(screen.getByRole("link",{name:"Connections"}));
+    fireEvent.click(screen.getByRole("checkbox",{name:"Show experimental remote features"}));
+    await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/v1/remote/support",expect.anything()));
+    fireEvent.click(within(screen.getByRole("list",{name:"Sessions"})).getByText("Fix authentication middleware"));
+    expect(await screen.findByRole("button",{name:"Support"})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Open command palette"}));
+    expect(screen.getByRole("option",{name:/Share this conversation/})).toBeInTheDocument();
+    fireEvent.keyDown(window,{key:"k",ctrlKey:true});
+    fireEvent.click(screen.getByRole("link",{name:"Connections"}));
+    expect(screen.getByRole("checkbox",{name:"Show experimental remote features"})).toBeChecked();
+    const currentTimer=intervals.mock.calls.reduce((last,[,delay],index)=>delay===10000?index:last,-1);
+    expect(currentTimer).toBeGreaterThanOrEqual(0);
+    const supportTimer=intervals.mock.results[currentTimer].value;
+    clear.mockClear();
+    fireEvent.click(screen.getByRole("checkbox",{name:"Show experimental remote features"}));
+    expect(clear).toHaveBeenCalledWith(supportTimer);
+    fireEvent.click(within(screen.getByRole("list",{name:"Sessions"})).getByText("Fix authentication middleware"));
+    expect(screen.queryByRole("button",{name:/^Support/})).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Open command palette"}));
+    expect(screen.queryByRole("option",{name:/Share this conversation/})).not.toBeInTheDocument();
+    unmount();
+    window.history.replaceState({},"","/connections");
+    render(<App/>);
+    expect(screen.getByRole("checkbox",{name:"Show experimental remote features"})).not.toBeChecked();
+  });
+
   it("keeps the public root URL stable after selecting the first session",async()=>{
     stubApi();
     render(<App/>);
@@ -167,6 +214,9 @@ describe("App",()=>{
     expect(container.querySelector(".app")).toHaveClass("sidebar-open");
     fireEvent.keyDown(window,{key:"Escape"});
     expect(container.querySelector(".app")).not.toHaveClass("sidebar-open");
+    fireEvent.click(screen.getByRole("link",{name:"Connections"}));
+    fireEvent.click(screen.getByRole("checkbox",{name:"Show experimental remote features"}));
+    fireEvent.click(within(screen.getByRole("list",{name:"Sessions"})).getByText("Fix authentication middleware"));
     fireEvent.click(await screen.findByRole("button",{name:"Support: code waiting"}));
     expect(screen.getByRole("heading",{name:"Share this conversation"})).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button",{name:/Open Connections/}));
@@ -230,6 +280,9 @@ describe("App",()=>{
     run("import");
     expect(screen.getByRole("heading",{name:"Bring your conversations together"})).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button",{name:"Back to the workspace"}));
+    run("connections");
+    fireEvent.click(screen.getByRole("checkbox",{name:"Show experimental remote features"}));
+    run("conversation");
     run("share this");
     expect(screen.getByRole("heading",{name:"Share this conversation"})).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button",{name:"Close dialog"}));

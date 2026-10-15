@@ -57,6 +57,8 @@ func handlerWithRemoteAccess(store *storage.Store, remoteManager *remote.Manager
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
 		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/sync"):
+			syncRoute(store, remoteManager, identity, hosted, w, r)
 		case remoteManager != nil && (strings.HasPrefix(r.URL.Path, "/api/v1/remote/") || strings.HasPrefix(r.URL.Path, "/remote/v1/") || r.URL.Path == "/mcp"):
 			remoteRoute(store, remoteManager, identity, verifier, publicURL, hosted, w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource"):

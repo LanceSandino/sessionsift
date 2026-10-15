@@ -88,7 +88,7 @@ func TestHookReceiverRedactsEveryUnknownPayloadKey(t *testing.T) {
 		t.Fatalf("session=%+v err=%v", session, err)
 	}
 	stored := strings.ToLower(stringify(session.Events[0].PayloadRedacted))
-	for _, secret := range []string{"hunter2secret", "abc123456789xyz", "/users/alice", "sk-abcdefghijklmnopqrstuvwx"} {
+	for _, secret := range []string{"hunter2secret", "abc123456789xyz", "/users/alice", "sk-" + "abcdefghijklmnopqrstuvwx"} { // gitleaks:allow -- synthetic redaction fixture
 		if strings.Contains(stored, secret) {
 			t.Fatalf("hook event retained %q: %s", secret, stored)
 		}

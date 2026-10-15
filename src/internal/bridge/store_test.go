@@ -37,6 +37,10 @@ func TestStoreEnrollsDeviceAndRoutesOnlyGrantedOperations(t *testing.T) {
 	if err != nil || grant.DeviceID != device.ID {
 		t.Fatalf("grant=%+v err=%v", grant, err)
 	}
+	granted, err := store.GrantOperations("reviewer@example.com", device.ID)
+	if err != nil || len(granted) != 1 || granted[0] != protocol.SessionList {
+		t.Fatalf("grant discovery=%v err=%v", granted, err)
+	}
 	request := protocol.Request{Version: 1, RequestID: "req-1", Operation: protocol.SessionList, Arguments: json.RawMessage(`{}`)}
 	task, err := store.Submit("reviewer@example.com", device.ID, request)
 	if err != nil {

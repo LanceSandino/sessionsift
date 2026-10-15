@@ -74,3 +74,19 @@ func TestInvitationOperationsAreCanonicalAndIsolated(t *testing.T) {
 		t.Fatal("caller mutated the canonical invitation operation set")
 	}
 }
+
+func TestHostedDefaultOperationsExcludeDetailedSessionEvidence(t *testing.T) {
+	defaultOperations := HostedDefaultOperations()
+	allowed := map[Operation]bool{}
+	for _, operation := range defaultOperations {
+		allowed[operation] = true
+	}
+	if !allowed[SessionList] || !allowed[AnalysisPatterns] {
+		t.Fatalf("default hosted profile lacks bounded discovery: %v", defaultOperations)
+	}
+	for _, detailed := range []Operation{SessionGet, SessionMetrics, SessionTimeline, SessionFindings, SessionCompare, TurnGet} {
+		if allowed[detailed] {
+			t.Fatalf("detailed operation %q escaped least-privilege default", detailed)
+		}
+	}
+}

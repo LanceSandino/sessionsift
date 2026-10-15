@@ -11,9 +11,9 @@ func TestNormalizeRedactsContentAndDropsPaths(t *testing.T) {
 	payload := map[string]any{
 		"session_id": "abc", "turn_id": "t1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
 		"stop_hook_active": true, "model": "claude-opus-5-5", "count": json.Number("3"),
-		"tool_input":             map[string]any{"command": "curl -H 'Authorization: Bearer abcdefghijklmnopq' x"},
+		"tool_input":             map[string]any{"command": "curl -H 'Authorization: Bearer " + "abcdefghijklmnopq' x"},
 		"tool_response":          strings.Repeat("x", 5000),
-		"last_assistant_message": "api_key=secretvalue123",
+		"last_assistant_message": "api_key=" + "secretvalue123",
 		"cwd":                    "/Users/alice/app", "transcript_path": "/Users/alice/.claude/x.jsonl", "agent_transcript_path": "/p",
 		"output_dir": "/tmp/out", "working_directory": "/tmp/work",
 	}

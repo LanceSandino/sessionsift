@@ -10,9 +10,12 @@ import (
 )
 
 func TestCatalogUsesSemanticVersionsAndMatchesHumanChangelog(t *testing.T) {
+	if CurrentVersion() != "2.1.0" {
+		t.Fatalf("CurrentVersion() = %q", CurrentVersion())
+	}
 	catalog := Catalog()
-	if catalog.CurrentVersion != "2.0.1" {
-		t.Fatalf("current version = %q, want 2.0.1", catalog.CurrentVersion)
+	if catalog.CurrentVersion != "2.1.0" {
+		t.Fatalf("current version = %q, want 2.1.0", catalog.CurrentVersion)
 	}
 	semantic := regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 	if len(catalog.Releases) < 2 {

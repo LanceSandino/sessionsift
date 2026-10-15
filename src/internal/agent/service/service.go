@@ -135,6 +135,9 @@ func (s *Service) Execute(ctx context.Context, request protocol.Request) protoco
 		}
 		return fail(response, protocol.StatusError, "response_limit", err)
 	}
+	if err := s.authorizer.Authorize(ctx, request); err != nil {
+		return fail(response, protocol.StatusDenied, "denied", err)
+	}
 	response.Status, response.Data = protocol.StatusOK, data
 	return response
 }

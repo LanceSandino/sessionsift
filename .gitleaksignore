@@ -1,0 +1,13 @@
+# Synthetic redaction fixtures introduced by the private ASAP regression suite.
+# Each exception is pinned to the exact historical commit, path, rule, and line.
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/api/asap4_regression_test.go:generic-api-key:91
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/codex/transcript/asap4_regression_test.go:curl-auth-header:15
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/hooks/normalize_test.go:curl-auth-header:14
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/api/asap4_regression_test.go:generic-api-key:77
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/redact/asap4_regression_test.go:gitlab-pat:48
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/redact/asap4_regression_test.go:generic-api-key:58
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/redact/asap4_regression_test.go:private-key:122
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/redact/asap4_regression_test.go:stripe-access-token:44
+61a74d7ab8b0a3da18da2e55e7e46aaf75b689d9:src/internal/redact/asap4_regression_test.go:stripe-access-token:45
+# Verified metadata-only function names in the M8 regression-anchor list; no secret value.
+ac42672eaa26fb3c48b98eb3d6545d77818f92cd:CHANGES.md:generic-api-key:980

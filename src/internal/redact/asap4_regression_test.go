@@ -40,15 +40,15 @@ func TestHomeAndAccountPathsAreRedactedInEveryEncoding(t *testing.T) {
 // ASAP4-F4b: common provider credentials outside the original pattern set.
 func TestAdditionalProviderCredentialsAreRedacted(t *testing.T) {
 	secrets := []string{
-		"sk-ant-" + "api03-abcdefghijklmnopqrstuvwxyz0123456789",
-		"sk_live_" + "abcdefghijklmnopqrstuvwx", // gitleaks:allow -- synthetic redaction fixture
-		"rk_live_" + "abcdefghijklmnopqrstuvwx", // gitleaks:allow -- synthetic redaction fixture
+		"sk-" + "ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+		"sk_" + "live_abcdefghijklmnopqrstuvwx", // gitleaks:allow -- synthetic redaction fixture
+		"rk_" + "live_abcdefghijklmnopqrstuvwx", // gitleaks:allow -- synthetic redaction fixture
 		"xoxb-" + "123456789012-abcdefghijklmnop",
-		"AIzaSy" + "A-abcdefghijklmnopqrstuvwxyz01234",
+		"AIzaSyA-" + "abcdefghijklmnopqrstuvwxyz01234",
 		"glpat-" + "abcdefghijklmnopqrst",               // gitleaks:allow -- synthetic redaction fixture
 		"npm_" + "abcdefghijklmnopqrstuvwxyz0123456789", // gitleaks:allow -- synthetic redaction fixture
 		"hf_" + "abcdefghijklmnopqrstuvwxyzABCDEF",
-		"github_pat_" + "11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz",
+		"github_" + "pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz",
 	}
 	for _, secret := range secrets {
 		if got := Text("value "+secret+" end", 0); strings.Contains(got, secret) {

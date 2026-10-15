@@ -1,0 +1,40 @@
+name: Verify source distribution
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.2"
+          cache: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "26.9.0"
+          cache: npm
+      - name: Release metadata and script tests
+        run: |
+          python3 scripts/release.py check
+          python3 -m unittest scripts/release_test.py
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Security, recovery, replay and tenant regressions
+        run: go test -race -p 2 -count=1 -timeout=180s ./...
+      - run: go vet ./...
+      - name: Package and smoke-test a Linux archive
+        env:
+          TARGETS: linux/amd64
+          OUTPUT_DIR: ${{ runner.temp }}/package
+        run: bash scripts/package.sh
+# Public behavioral regressions do not assert completion of a private reviewer
+# track or production OAuth acceptance. Private source-bound qualification and
+# its full failure-evidence pipeline remain in the authoritative private repo.
