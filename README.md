@@ -5,7 +5,8 @@ imported ChatGPT/Claude exports. Browse conversations, inspect tokens and tools,
 compare sessions and use ten read-only local MCP tools. No account, Google login,
 bridge or cloud service is required. Findings point to evidence, not productivity scores.
 
-**Version 2.1.0.** See [what this release includes](docs/release-candidate.md).
+**Version 2.1.0.** See [what this release includes](docs/release-candidate.md)
+and the [release history](CHANGELOG.md) from 1.0.0.
 macOS binaries are unsigned and unnotarized; the published SHA-256 checksums
 verify download integrity, not publisher identity. Do not disable Gatekeeper
 globally.
@@ -158,5 +159,4 @@ transcripts or credentials in a public issue.
 ## License
 
 Source-available under [PolyForm Noncommercial 1.0.0](LICENSE) with required
-[NOTICE](NOTICE) attribution. Not OSI open source; commercial use is reserved.
-Owner/legal disposition remains a publication prerequisite.
+[NOTICE](NOTICE) attribution. Not OSI open source; commercial use is not licensed.

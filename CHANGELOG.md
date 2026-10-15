@@ -2,7 +2,8 @@
 
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Release notes describe user-visible changes, newest first. The in-app changelog
-shows the same history.
+shows the same history. 2.1.0 is the first public release; earlier versions were
+developed privately and are tagged in this repository's history.
 
 ## [2.1.0] — 2026-10-14
 
