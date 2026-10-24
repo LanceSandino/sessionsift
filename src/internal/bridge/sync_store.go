@@ -31,6 +31,11 @@ type SyncLimits struct {
 	MinFreeBytes      int64
 }
 
+// MaxSyncPageSize is the hard ceiling for one change-feed page. An operator
+// may lower the page size, but a request limit sizes both an allocation and a
+// SQL LIMIT, so no configuration may raise it past this bound.
+const MaxSyncPageSize = 1000
+
 var defaultSyncLimits = SyncLimits{MaxObjectBytes: 2 << 20, MaxWorkspaceBytes: 512 << 20, MaxPageSize: 200, MinFreeBytes: 256 << 20}
 
 var syncAvailableBytes = func(path string) (uint64, error) {
@@ -155,7 +160,7 @@ func (s *Store) ConfigureSync(limits SyncLimits) {
 		s.syncLimits.MaxWorkspaceBytes = limits.MaxWorkspaceBytes
 	}
 	if limits.MaxPageSize > 0 {
-		s.syncLimits.MaxPageSize = limits.MaxPageSize
+		s.syncLimits.MaxPageSize = min(limits.MaxPageSize, MaxSyncPageSize)
 	}
 	if limits.MinFreeBytes > 0 {
 		s.syncLimits.MinFreeBytes = limits.MinFreeBytes
@@ -283,6 +288,9 @@ func (s *Store) SyncChanges(deviceID string, cursor int64, limit int) ([]SyncCha
 	}
 	if limit > s.syncLimits.MaxPageSize {
 		limit = s.syncLimits.MaxPageSize
+	}
+	if limit > MaxSyncPageSize {
+		limit = MaxSyncPageSize
 	}
 	// Objects retain only their current ciphertext. Return only the latest change
 	// for each object so an offline/new reader never requests a historical digest

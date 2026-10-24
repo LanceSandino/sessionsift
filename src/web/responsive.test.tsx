@@ -24,7 +24,8 @@ describe("workspace layout contract",()=>{
 
   // Ported from D-20260924-051: iOS Safari compressed grid/flex library rows into overlapping cards.
   it("keeps library rows in normal block flow so a short phone viewport cannot compress them",()=>{
-    const rule=(selector:string,source:string)=>source.match(new RegExp(`(?:^|\n)${selector.replace(".","\.")}\{([^}]*)\}`))?.[1]??"";
+    const escaped=(value:string)=>value.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+    const rule=(selector:string,source:string)=>source.match(new RegExp(`(?:^|\n)${escaped(selector)}\\{([^}]*)\\}`))?.[1]??"";
     const list=rule(".session-list",shell);
     expect(list).toContain("overflow-y:auto");
     expect(list).not.toMatch(/display:(grid|flex)/);

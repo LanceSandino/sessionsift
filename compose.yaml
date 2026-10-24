@@ -1,7 +1,7 @@
 name: sessionsift
 
 x-runtime: &runtime
-  image: sessionsift:2.1.0
+  image: sessionsift:2.1.1
   user: "${SESSIONSIFT_UID:-501}:${SESSIONSIFT_GID:-20}"
   init: true
   restart: unless-stopped

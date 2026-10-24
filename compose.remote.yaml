@@ -4,7 +4,7 @@ name: sessionsift
 # remote support, invitations, or hosted MCP access are deliberately enabled.
 services:
   bridge:
-    image: sessionsift:2.1.0
+    image: sessionsift:2.1.1
     build:
       context: .
     user: "${SESSIONSIFT_UID:-501}:${SESSIONSIFT_GID:-20}"

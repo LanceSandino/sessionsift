@@ -1,6 +1,6 @@
-# SessionSift 2.1.0: what this release includes
+# SessionSift 2.1.1: what this release includes
 
-SessionSift 2.1.0 is a free, local-only release. Everything runs on your own
+SessionSift 2.1.1 is a free, local-only release. Everything runs on your own
 machine: transcript import, the dashboard on `127.0.0.1:7777`, backups and the
 ten read-only MCP tools over stdio. No account, Google login, bridge or cloud
 service is needed or offered.
@@ -31,7 +31,7 @@ See the [README](../README.md) for the commands.
   it.
 - Third-party license texts are included in `NOTICE`.
 
-## Not included in 2.1.0
+## Not included in 2.1.1
 
 The source also contains an optional hosted bridge, remote MCP and
 client-encrypted sync. These are not offered or supported as a service in this

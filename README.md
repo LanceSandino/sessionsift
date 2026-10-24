@@ -5,7 +5,7 @@ imported ChatGPT/Claude exports. Browse conversations, inspect tokens and tools,
 compare sessions and use ten read-only local MCP tools. No account, Google login,
 bridge or cloud service is required. Findings point to evidence, not productivity scores.
 
-**Version 2.1.0.** See [what this release includes](docs/release-candidate.md)
+**Version 2.1.1.** See [what this release includes](docs/release-candidate.md)
 and the [release history](CHANGELOG.md) from 1.0.0.
 macOS binaries are unsigned and unnotarized; the published SHA-256 checksums
 verify download integrity, not publisher identity. Do not disable Gatekeeper
@@ -65,8 +65,8 @@ an SPDX inventory and `SHA256SUMS`. Verify and unpack, then run the binary:
 
 ```bash
 shasum -a 256 -c SHA256SUMS --ignore-missing
-tar -xzf sessionsift_2.1.0_darwin_amd64.tar.gz
-./sessionsift_2.1.0_darwin_amd64/sessionsift doctor
+tar -xzf sessionsift_2.1.1_darwin_amd64.tar.gz
+./sessionsift_2.1.1_darwin_amd64/sessionsift doctor
 ```
 
 ## 2. Docker
@@ -95,7 +95,7 @@ Compose files for consumer installation.
 
 ## 3. Build from Source
 
-Use **Go 1.27.2** (`go.mod`), **Node.js 26** (tested with 26.9.0), npm and a source
+Use **Go 1.27.3** (`go.mod`), **Node.js 26** (tested with 26.12.1), npm and a source
 copy with `LICENSE`/`NOTICE`. Locked test dependencies require Node
 `^22.22.2 || ^24.15.0 || >=26.0.0`; older generic “Node 22+” is insufficient.
 Dependency downloads initially require internet; app use does not. No private

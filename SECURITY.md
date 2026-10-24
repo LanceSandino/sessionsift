@@ -5,7 +5,7 @@ sensitive local software. Never include real user content or credentials in a re
 
 ## Supported version
 
-Only the newest published release (currently 2.1.0) receives security fixes.
+Only the newest published release (currently 2.1.1) receives security fixes.
 See `docs/release-candidate.md` for what that release does and does not include.
 
 ## Reporting a vulnerability

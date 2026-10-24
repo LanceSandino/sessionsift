@@ -39,7 +39,7 @@ func TestOpenStoreBacksUpPriorVersionBeforeMigration(t *testing.T) {
 	}
 	var backupPath string
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "pre-migration-2.0.1-to-2.1.0-") {
+		if strings.HasPrefix(entry.Name(), "pre-migration-2.0.1-to-2.1.1-") {
 			backupPath = paths.Backups + "/" + entry.Name()
 		}
 	}

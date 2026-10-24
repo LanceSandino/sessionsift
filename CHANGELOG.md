@@ -5,6 +5,37 @@ Release notes describe user-visible changes, newest first. The in-app changelog
 shows the same history. 2.1.0 is the first public release; earlier versions were
 developed privately and are tagged in this repository's history.
 
+## [2.1.1] — 2026-10-24
+
+Security release. Updates the Go toolchain, Go modules, web build and test
+dependencies and the Docker build images to their patched versions, and hardens
+two input checks found by code scanning.
+
+### Security
+
+- Release binaries are built with Go 1.27.3, which distrusts compromised intermediate certificates in `crypto/x509` (GO-2026-6809, CVE-2026-111943).
+- Updated Vite to 8.3.5 (CVE-2026-112942, CVE-2026-112943, CVE-2026-112944, CVE-2026-112945, CVE-2026-112946, CVE-2026-112947). Vite builds the dashboard; its development server is not part of SessionSift.
+- Updated Vitest and its coverage plugin to 5.0.5 (CVE-2026-112949, CVE-2026-112950) and jsdom to 30.1.3 with undici 8.12.3 (CVE-2026-109841, CVE-2026-109869, CVE-2026-109924). These are test-only tools.
+- Updated mutation-testing dependencies, including fixes in zod (CVE-2023-54404) and fast-uri (CVE-2026-110095, CVE-2026-110180, CVE-2026-110306, CVE-2026-110725).
+- The Docker build and the release builders use Node.js 26.12.1, the Node.js security release of 2026-10-21 (including CVE-2026-111497), and Go 1.27.3. Docker base images are pinned by digest, and the runtime image moves to distroless Debian 13.
+
+### Fixed
+
+- The optional hosted bridge caps a sync page at 1,000 changes even when `SESSIONSIFT_SYNC_MAX_PAGE_SIZE` is set higher. An oversized setting made a page request fail with a runtime panic and could size an unbounded query.
+- Codex transcript exit codes and rate-limit windows outside the 32-bit range are ignored instead of wrapping on 32-bit builds.
+
+### Improved
+
+- Updated React to 19.3.1, the Go MCP SDK to 1.8.0, SQLite (modernc) to 1.61.0, gRPC to 1.84.0 and the other Go modules to their latest releases.
+- CI scans npm (`npm audit`, moderate and above) and Go (`govulncheck`) dependencies on every change and weekly, and Dependabot proposes grouped weekly updates.
+- `NOTICE` is regenerated from the locked dependencies, and the release workflow checks that it is current.
+
+### Notes
+
+- No data migration or configuration change is needed. As with every version change, the first start keeps a pre-migration backup.
+- Apple Silicon and Linux ARM64 builds are not offered yet.
+- macOS binaries are unsigned and unnotarized; checksums verify downloads, not publisher identity.
+
 ## [2.1.0] — 2026-10-14
 
 First public release. SessionSift runs entirely on your machine; no account,

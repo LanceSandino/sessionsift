@@ -3,30 +3,38 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '23 5 * * 1'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: "1.27.2"
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
           cache: true
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.9.0"
+          node-version: "26.12.1"
           cache: npm
       - name: Release metadata and script tests
         run: |
           python3 scripts/release.py check
-          python3 -m unittest scripts/release_test.py
+          python3 -m unittest scripts/release_test.py scripts/notices_test.py
       - run: npm ci
+      - name: npm vulnerability scan
+        run: npm audit --audit-level=moderate
       - run: npm test
       - run: npm run build
+      - name: Go vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Security, recovery, replay and tenant regressions
         run: go test -race -p 2 -count=1 -timeout=180s ./...
       - run: go vet ./...

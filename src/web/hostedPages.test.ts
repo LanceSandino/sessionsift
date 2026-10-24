@@ -8,7 +8,7 @@ function pageScripts(name:string):string[]{
   const start=source.indexOf(`const ${name} = \``);
   expect(start,`page ${name} exists`).toBeGreaterThanOrEqual(0);
   const body=source.slice(start,source.indexOf("</html>`",start));
-  return [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match=>match[1]);
+  return [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/gi)].map(match=>match[1]);
 }
 
 describe("hosted bridge pages",()=>{

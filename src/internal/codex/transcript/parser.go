@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -368,7 +369,7 @@ func parseEventMessage(s *domain.Session, record envelope, turnID, eventID strin
 			if usedOK {
 				snapshot := rateLimitSnapshot{used: float64(used), valid: true}
 				if windowOK {
-					snapshot.window = int(window)
+					snapshot.window, _ = int32Value(window)
 				}
 				if resetOK {
 					snapshot.resetsAt = time.Unix(reset, 0).UTC()
@@ -452,9 +453,10 @@ func updateToolResult(call *domain.ToolCall, output string) {
 	var value map[string]any
 	if json.Unmarshal([]byte(output), &value) == nil {
 		if exit, ok := numeric(value["exit_code"]); ok {
-			n := int(exit)
-			call.ExitCode = &n
-			call.Success = n == 0
+			if n, fits := int32Value(exit); fits {
+				call.ExitCode = &n
+				call.Success = n == 0
+			}
 		}
 		if errValue, ok := value["isError"].(bool); ok && errValue {
 			call.Success = false
@@ -624,6 +626,17 @@ func numeric(value any) (int64, bool) {
 	}
 	return 0, false
 }
+
+// int32Value narrows a transcript number for an int field. Values outside the
+// 32-bit range are not real exit codes or rate-limit windows, and rejecting
+// them keeps every build from silently wrapping the value.
+func int32Value(value int64) (int, bool) {
+	if value < math.MinInt32 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int(value), true
+}
+
 func findTurn(s *domain.Session, id string) *domain.Turn {
 	for index := range s.Turns {
 		if s.Turns[index].ExternalTurnID == id {

@@ -411,12 +411,7 @@ func startBridge(ctx context.Context, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	defer store.Close()
-	store.ConfigureSync(bridgeapp.SyncLimits{
-		MaxObjectBytes:    positiveEnvInt64("SESSIONSIFT_SYNC_MAX_OBJECT_BYTES"),
-		MaxWorkspaceBytes: positiveEnvInt64("SESSIONSIFT_SYNC_MAX_WORKSPACE_BYTES"),
-		MaxPageSize:       int(positiveEnvInt64("SESSIONSIFT_SYNC_MAX_PAGE_SIZE")),
-		MinFreeBytes:      positiveEnvInt64("SESSIONSIFT_SYNC_MIN_FREE_BYTES"),
-	})
+	store.ConfigureSync(syncLimitsFromEnv())
 	verifier, err := accessauth.NewFromEnv(nil)
 	if err != nil {
 		return fail(errOut, fmt.Errorf("bridge requires SESSIONSIFT_ACCESS_ISSUER and SESSIONSIFT_ACCESS_AUD: %w", err))
@@ -445,6 +440,37 @@ func startBridge(ctx context.Context, out, errOut io.Writer) int {
 		return fail(errOut, err)
 	}
 	return 0
+}
+
+// syncLimitsFromEnv reads operator sync limits; unset or invalid values keep
+// the bridge defaults.
+func syncLimitsFromEnv() bridgeapp.SyncLimits {
+	return bridgeapp.SyncLimits{
+		MaxObjectBytes:    positiveEnvInt64("SESSIONSIFT_SYNC_MAX_OBJECT_BYTES"),
+		MaxWorkspaceBytes: positiveEnvInt64("SESSIONSIFT_SYNC_MAX_WORKSPACE_BYTES"),
+		MaxPageSize:       syncPageSizeFromEnv(),
+		MinFreeBytes:      positiveEnvInt64("SESSIONSIFT_SYNC_MIN_FREE_BYTES"),
+	}
+}
+
+// syncPageSizeFromEnv parses the page size with the bridge's hard ceiling, so
+// a large value never wraps when narrowed to int.
+func syncPageSizeFromEnv() int {
+	value := strings.TrimSpace(os.Getenv("SESSIONSIFT_SYNC_MAX_PAGE_SIZE"))
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if errors.Is(err, strconv.ErrRange) && parsed > 0 {
+		return bridgeapp.MaxSyncPageSize
+	}
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	if parsed > bridgeapp.MaxSyncPageSize {
+		return bridgeapp.MaxSyncPageSize
+	}
+	return int(parsed)
 }
 
 func positiveEnvInt64(name string) int64 {
